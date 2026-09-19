@@ -1,0 +1,1 @@
+{"limits":{"maxAttempts":2,"normalContextFiles":6,"normalTests":3,"normalDocs":2},"protectedActions":["deploy","force_push","delete_branch","wallet_permission_change","financial_execution","secret_read","retry_budget_override"]}

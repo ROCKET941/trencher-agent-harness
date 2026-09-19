@@ -1,0 +1,1 @@
+export function createTaskLedger(packet){return{task:packet.task,risk:packet.risk,rootCause:packet.rootCause||'UNKNOWN',files:packet.files||[],protected:packet.protectedBoundaries||[],verification:packet.tests||[],open:packet.openQuestions||[]}}
