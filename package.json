@@ -1,5 +1,20 @@
 {
-  "name":"trencher-agent-harness","version":"0.1.0","private":true,"type":"module",
-  "description":"Credit-efficient frontier-model routing and delegation harness",
-  "scripts":{"test":"node --test","smoke":"node scripts/smoke.mjs"},"engines":{"node":">=22"}
+  "name": "trencher-agent-harness",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Credit-efficient frontier-model routing and delegation harness",
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node scripts/smoke.mjs",
+    "mcp": "node src/mcp/server.js",
+    "mcp:smoke": "node scripts/mcp-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  }
 }
