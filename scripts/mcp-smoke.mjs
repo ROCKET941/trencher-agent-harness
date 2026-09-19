@@ -9,6 +9,7 @@ const expectedTools = [
   'check_action',
   'check_continue',
   'create_delegation',
+  'execute_routed_task',
   'review_route',
   'route_task'
 ]

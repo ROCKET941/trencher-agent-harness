@@ -1,0 +1,2 @@
+export class ProviderAdapter{constructor(name){this.name=name}async execute(){throw new Error(`${this.name}: execute not implemented`)}}
+export function normalizeResult({provider,model,role,output='',usage={},finishReason=null,metadata={}}){const a=Number(usage.inputTokens||0),b=Number(usage.outputTokens||0);return{provider,model,role,output:String(output),usage:{inputTokens:a,outputTokens:b,totalTokens:Number(usage.totalTokens||a+b)},finishReason,metadata}}

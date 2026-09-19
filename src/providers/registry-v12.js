@@ -1,0 +1,1 @@
+const p=new Map();export const registerProvider=(n,a)=>{if(!n||!a?.execute)throw new Error('provider adapter required');p.set(n,a)};export const getProvider=n=>{const a=p.get(n);if(!a)throw new Error(`Provider not registered: ${n}`);return a};export const clearProviders=()=>p.clear();export const listProviders=()=>[...p.keys()]

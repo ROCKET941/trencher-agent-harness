@@ -1,0 +1,1 @@
+{"roles":{"scout":{"provider":"openai","modelEnv":"HARNESS_SCOUT_MODEL"},"engineer":{"provider":"openai","modelEnv":"HARNESS_ENGINEER_MODEL"},"deep_debugger":{"provider":"openai","modelEnv":"HARNESS_DEBUG_MODEL"},"reviewer":{"provider":"openai","modelEnv":"HARNESS_REVIEW_MODEL"},"exceptional":{"provider":"openai","modelEnv":"HARNESS_EXCEPTIONAL_MODEL"}}}
