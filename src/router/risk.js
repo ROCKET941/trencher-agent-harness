@@ -1,2 +1,3 @@
-const HIGH=['wallet','swap','settlement','transaction','execution','accounting','pnl','keeper','authentication','security','redis','concurrency','race','runtime role','deployment','production source','real funds']
-export function classifyRisk(task=''){const text=task.toLowerCase();const matches=HIGH.filter(term=>text.includes(term));return{risk:matches.length?'high':'normal',matches}}
+const HIGH=[/\bwallet\b/,/\bsettlement\b/,/\bfinancial execution\b/,/\breal funds?\b/,/\baccounting\b/,/\bpnl\b/,/\bauthentication\b/,/\bsecurity\b/,/\bconcurrenc(?:y|t)\b/,/\brace condition\b/,/\bdeployment\b/,/\bproduction source\b/,/\bexecute(?: a| the)? swap\b/,/\bsubmit(?: a| the)? transaction\b/]
+const RETRIEVAL=/^\s*(find|locate|search|list|show|identify|summarize)\b.*\b(callers?|references?|usages?|symbol)\b/i
+export function classifyRisk(task=''){const text=String(task).toLowerCase();if(RETRIEVAL.test(text))return{risk:'normal',matches:[],reason:'exact-retrieval-intent'};const matches=HIGH.filter(pattern=>pattern.test(text)).map(pattern=>pattern.source);return{risk:matches.length?'high':'normal',matches,reason:matches.length?'safety-sensitive-intent':'ordinary-intent'}}

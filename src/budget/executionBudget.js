@@ -1,14 +1,17 @@
 import routing from '../../config/routing.json' with { type: 'json' }
 const positiveInt = (value, fallback) => Number.isInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback
 export function resolveBudget(input = {}, env = process.env) {
-  const maxInputTokens = positiveInt(input.maxInputTokens ?? env.HARNESS_MAX_INPUT_TOKENS, routing.limits.maxEstimatedInputTokens || 12000)
+  const ceilingInput = positiveInt(env.HARNESS_MAX_INPUT_TOKENS, routing.limits.maxEstimatedInputTokens || 12000)
+  const maxInputTokens = Math.min(positiveInt(input.maxInputTokens, ceilingInput),ceilingInput)
+  const ceilingEstimated=positiveInt(env.HARNESS_MAX_ESTIMATED_INPUT_TOKENS,ceilingInput)
+  const ceilingOutput=positiveInt(env.HARNESS_MAX_OUTPUT_TOKENS,5000)
   return {
     maxInputTokens,
-    maxEstimatedInputTokens: positiveInt(input.maxEstimatedInputTokens ?? env.HARNESS_MAX_ESTIMATED_INPUT_TOKENS, maxInputTokens),
-    maxOutputTokens: positiveInt(input.maxOutputTokens ?? env.HARNESS_MAX_OUTPUT_TOKENS, 5000),
-    maxDelegations: positiveInt(input.maxDelegations ?? env.HARNESS_MAX_DELEGATIONS, 2),
-    maxParallel: positiveInt(input.maxParallel ?? env.HARNESS_MAX_PARALLEL, 1),
-    maxAttempts: positiveInt(input.maxAttempts ?? env.HARNESS_MAX_ATTEMPTS, 2)
+    maxEstimatedInputTokens: Math.min(positiveInt(input.maxEstimatedInputTokens,ceilingEstimated),ceilingEstimated,maxInputTokens),
+    maxOutputTokens: Math.min(positiveInt(input.maxOutputTokens,ceilingOutput),ceilingOutput),
+    maxDelegations: positiveInt(env.HARNESS_MAX_DELEGATIONS,2),
+    maxParallel: Math.min(3,positiveInt(env.HARNESS_MAX_PARALLEL,1)),
+    maxAttempts: Math.min(2,positiveInt(env.HARNESS_MAX_ATTEMPTS,2))
   }
 }
 export function checkExecutionBudget(state = {}, budget = resolveBudget()) {

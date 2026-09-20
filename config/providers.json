@@ -1,1 +1,16 @@
-{"roles":{"scout":{"provider":"openai","modelEnv":"HARNESS_SCOUT_MODEL"},"engineer":{"provider":"openai","modelEnv":"HARNESS_ENGINEER_MODEL"},"deep_debugger":{"provider":"openai","modelEnv":"HARNESS_DEBUG_MODEL"},"reviewer":{"provider":"openai","modelEnv":"HARNESS_REVIEW_MODEL"},"exceptional":{"provider":"openai","modelEnv":"HARNESS_EXCEPTIONAL_MODEL"}}}
+{
+  "version": "2026-09-20",
+  "providers": {
+    "openai": { "keyEnv": ["OPENAI_API_KEY"], "baseUrlEnv": "OPENAI_BASE_URL", "defaultBaseUrl": "https://api.openai.com", "catalogPath": "/v1/models" },
+    "xai": { "keyEnv": ["XAI_API_KEY"], "baseUrlEnv": "XAI_BASE_URL", "defaultBaseUrl": "https://api.x.ai", "catalogPath": "/v1/models" },
+    "deepseek": { "keyEnv": ["DEEPSEEK_API_KEY"], "baseUrlEnv": "DEEPSEEK_BASE_URL", "defaultBaseUrl": "https://api.deepseek.com", "catalogPath": "/models" },
+    "kimi": { "keyEnv": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "baseUrlEnv": "KIMI_BASE_URL", "defaultBaseUrl": "https://api.moonshot.ai", "catalogPath": "/v1/models" }
+  },
+  "roles": {
+    "scout": { "provider": "openai", "model": "gpt-5.6-luna", "effort": "medium" },
+    "engineer": { "provider": "openai", "model": "gpt-5.6-terra", "effort": "high" },
+    "deep_debugger": { "provider": "openai", "model": "gpt-5.6-sol", "effort": "high" },
+    "reviewer": { "provider": "openai", "model": "gpt-5.6-sol", "effort": "high" },
+    "exceptional": { "provider": "openai", "model": "gpt-6-astra", "effort": "xhigh" }
+  }
+}

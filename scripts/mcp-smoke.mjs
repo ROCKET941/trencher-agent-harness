@@ -6,12 +6,18 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const expectedTools = [
   'build_evidence_packet',
+  'cancel_job',
   'check_action',
   'check_continue',
   'create_delegation',
   'execute_routed_task',
+  'job_status',
+  'model_catalog',
+  'provider_status',
+  'resume_routed_task',
   'review_route',
-  'route_task'
+  'route_task',
+  'task_usage'
 ]
 
 const child = spawn(process.execPath, ['src/mcp/server.js'], {
@@ -83,11 +89,16 @@ try {
   const listed = await request(2, 'tools/list')
   const toolNames = listed.tools.map(tool => tool.name).sort()
   assert.deepEqual(toolNames, expectedTools)
+  const called=await request(3,'tools/call',{name:'route_task',arguments:{task:'Find every caller of reconcileSwapFill',useJev:false}})
+  const value=JSON.parse(called.content[0].text)
+  assert.equal(value.route.role,'scout')
+  assert.equal(value.packet.risk,'normal')
 
   console.log(JSON.stringify({
     initialized: initialized.serverInfo,
     protocolVersion: initialized.protocolVersion,
-    tools: toolNames
+    tools: toolNames,
+    call:{role:value.route.role,risk:value.packet.risk}
   }, null, 2))
 } finally {
   child.stdin.end()
