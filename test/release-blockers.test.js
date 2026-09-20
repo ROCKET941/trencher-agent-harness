@@ -16,6 +16,7 @@ import { taskIdentityFromContext } from '../src/execution/taskIdentity.js'
 
 const tempStore=async(env={})=>new AccountingStore({file:path.join(await mkdtemp(path.join(os.tmpdir(),'release-blockers-')),'ledger.json'),env})
 const report={name:'report_result',arguments:JSON.stringify({status:'complete',findings:['done'],artifact:'patch',evidence:['approved'],tests:['mock'],blockers:[]})}
+const externalRoute={provider:'xai',model:'grok-4.6',effort:'high'}
 
 test('Jev advice fails closed before dispatch without both owner gate and conservative bound',async()=>{
   let calls=0;const fetchImpl=async()=>{calls++;throw new Error('must not call')}
@@ -33,11 +34,11 @@ test('one Jev reservation covers retry and charges the operator bound to the der
 })
 
 test('service resumes request_context with the same task and attempt history',async()=>{
-  const calls=[];clearProviders();registerProvider('openai',{execute:async query=>{calls.push(query);return calls.length===1
-    ?normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:10,outputTokens:4},metadata:{responseId:'resp-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need direct caller'})}]}})
-    :normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:7,outputTokens:3},metadata:{responseId:'resp-2',toolCalls:[report]}})}})
+  const calls=[];clearProviders();registerProvider('xai',{execute:async query=>{calls.push(query);return calls.length===1
+    ?normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:10,outputTokens:4},metadata:{responseId:'resp-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need direct caller'})}]}})
+    :normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:7,outputTokens:3},metadata:{responseId:'resp-2',toolCalls:[report]}})}})
   const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100',HARNESS_MAX_DELEGATIONS:'2'},store=await tempStore(env)
-  const first=await executeRoutedTask({task:'implement bounded fix',files:['src/a.js']},{useJev:false,env,store})
+  const first=await executeRoutedTask({task:'implement bounded fix',files:['src/a.js'],requestedRoute:externalRoute},{useJev:false,env,store})
   const resumed=await resumeRoutedTask({jobId:first.execution.job.id,approvedEvidence:{evidence:['src/a.js:12 calls helper with stale input'],files:['src/a.js']}},{env,store})
   const usage=await store.getUsage(first.execution.taskId)
   assert.equal(first.execution.result.completion.reason,'bounded-context-requested');assert.equal(resumed.result.structured.status,'complete')
@@ -48,8 +49,8 @@ test('service resumes request_context with the same task and attempt history',as
 })
 
 test('continuation rejects unsafe evidence and provider bodies preserve bounded semantics',async()=>{
-  clearProviders();registerProvider('openai',{execute:async query=>normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{responseId:'r',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need it'})}]}})})
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true'},store=await tempStore(env),first=await executeRoutedTask({task:'bounded continuation'},{useJev:false,env,store})
+  clearProviders();registerProvider('xai',{execute:async query=>normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{responseId:'r',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need it'})}]}})})
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true'},store=await tempStore(env),first=await executeRoutedTask({task:'bounded continuation',requestedRoute:externalRoute},{useJev:false,env,store})
   const denied=await resumeRoutedTask({jobId:first.execution.job.id,approvedEvidence:{files:['../../.env']}},{env,store})
   assert.equal(denied.reason,'approved-evidence-unsafe-path')
   const responseBody=openAIResponseBody({model:'m',effort:'high',budget:{maxOutputTokens:20},previousResponseId:'resp',continuation:{request:{reason:'x'},approvedEvidence:{evidence:['ok']}}})
@@ -60,9 +61,9 @@ test('continuation rejects unsafe evidence and provider bodies preserve bounded 
 test('MCP request_context to approved evidence to complete report is resumable end to end',async()=>{
   let calls=0
   const adapter={execute:async query=>{calls++;return calls===1
-    ?normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:3,outputTokens:2},metadata:{responseId:'mcp-response-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/mcp.js'],reason:'need approved excerpt'})}]}})
-    :normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:2,outputTokens:2},metadata:{toolCalls:[report]}})}}
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100'},store=await tempStore(env),server=createServer({env,store,useJev:false,providers:{openai:adapter}})
+    ?normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:3,outputTokens:2},metadata:{responseId:'mcp-response-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/mcp.js'],reason:'need approved excerpt'})}]}})
+    :normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:2,outputTokens:2},metadata:{toolCalls:[report]}})}}
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100'},store=await tempStore(env),server=createServer({env,store,useJev:false,providers:{xai:adapter}})
   const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair(),pending=new Map();let nextId=1
   clientTransport.onmessage=message=>{if(message.id!=null&&pending.has(message.id)){const {resolve,reject}=pending.get(message.id);pending.delete(message.id);message.error?reject(new Error(JSON.stringify(message.error))):resolve(message.result)}}
   await server.connect(serverTransport);await clientTransport.start()
@@ -70,7 +71,7 @@ test('MCP request_context to approved evidence to complete report is resumable e
   try{
     await request('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'release-test',version:'1'}})
     await clientTransport.send({jsonrpc:'2.0',method:'notifications/initialized',params:{}})
-    const firstCall=await request('tools/call',{name:'execute_routed_task',arguments:{task:'implement MCP continuation',files:['src/mcp.js']}}),first=JSON.parse(firstCall.content[0].text)
+    const firstCall=await request('tools/call',{name:'execute_routed_task',arguments:{task:'implement MCP continuation',files:['src/mcp.js'],requestedRoute:externalRoute}}),first=JSON.parse(firstCall.content[0].text)
     const secondCall=await request('tools/call',{name:'resume_routed_task',arguments:{jobId:first.execution.job.id,approvedEvidence:{evidence:['src/mcp.js:20 has the required direct call'],files:['src/mcp.js']}}}),second=JSON.parse(secondCall.content[0].text)
     assert.equal(first.execution.result.completion.reason,'bounded-context-requested');assert.equal(second.result.structured.status,'complete');assert.equal(second.taskId,first.execution.taskId);assert.equal(calls,2)
   }finally{await clientTransport.close()}

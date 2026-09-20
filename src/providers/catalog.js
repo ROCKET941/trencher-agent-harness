@@ -1,18 +1,19 @@
 import config from '../../config/providers.json' with { type: 'json' }
+import { executionModeForProvider } from '../policy/providerExecution.js'
 
 export const REGISTRY_VERSION = config.version
 const verifiedAt = '2026-09-20'
 const models = [
-  ['openai', 'gpt-5.6-luna', ['none','low','medium','high','xhigh','max'], 0.20, 1.20, null, 'https://developers.openai.com/api/docs/models'],
-  ['openai', 'gpt-5.6-terra', ['none','low','medium','high','xhigh','max'], 2, 12, null, 'https://developers.openai.com/api/docs/models'],
-  ['openai', 'gpt-5.6-sol', ['none','low','medium','high','xhigh','max'], 4, 20, null, 'https://developers.openai.com/api/docs/models'],
-  ['openai', 'gpt-6-astra', ['low','medium','high','xhigh','max'], 10, 50, null, 'https://developers.openai.com/api/docs/models'],
+  ['openai', 'gpt-5.6-luna', ['none','low','medium','high','xhigh','max'], null, null, null, 'https://developers.openai.com/api/docs/models'],
+  ['openai', 'gpt-5.6-terra', ['none','low','medium','high','xhigh','max'], null, null, null, 'https://developers.openai.com/api/docs/models'],
+  ['openai', 'gpt-5.6-sol', ['none','low','medium','high','xhigh','max'], null, null, null, 'https://developers.openai.com/api/docs/models'],
+  ['openai', 'gpt-6-astra', ['low','medium','high','xhigh','max'], null, null, null, 'https://developers.openai.com/api/docs/models'],
   ['xai', 'grok-4.6', ['low','medium','high','xhigh'], 2, 6, null, 'https://docs.x.ai/developers/models'],
   ['deepseek', 'deepseek-flash', ['none','low','high','max'], 0.30, 1.20, 1000000, 'https://api-docs.deepseek.com/quick_start/pricing'],
   ['deepseek', 'deepseek-v4-pro', ['none','low','high','max'], 1.32, 3.96, 1000000, 'https://api-docs.deepseek.com/quick_start/pricing'],
   ['kimi', 'kimi-k3', ['low','high','max'], 3, 15, 1000000, 'https://www.kimi.ai/help/kimi-api/api-overview']
 ].map(([provider,id,efforts,inputPerMTok,outputPerMTok,contextTokens,source]) => ({
-  provider,id,efforts,inputPerMTok,outputPerMTok,contextTokens,source,verifiedAt,
+  provider,id,efforts,inputPerMTok,outputPerMTok,contextTokens,source,verifiedAt,executionMode:executionModeForProvider(provider),
   transport: provider === 'kimi' || provider === 'deepseek' ? 'chat_completions' : 'responses',
   alwaysThinking: provider === 'kimi'
 }))

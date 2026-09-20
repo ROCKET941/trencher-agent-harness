@@ -1,10 +1,11 @@
 # Trencher Multi-Provider Orchestrator
 
-A bounded, BYOK control plane for routing engineering tasks to verified OpenAI, xAI, DeepSeek, or Kimi models. Deterministic safety, server-owned accounting, and compact context always outrank Jev or model advice.
+A bounded control plane for routing engineering tasks to native ChatGPT/Codex agents or verified xAI, DeepSeek, and Kimi API delegates. Deterministic safety, server-owned accounting, and compact context always outrank Jev or model advice.
 
 ## Safety and execution model
 
-- Host commander is the default. All paid generation requires `HARNESS_ENABLE_PAID_EXECUTION=true`. An API commander additionally requires its owner environment gate and per-call opt-in, is mutually exclusive with an active host commander, and is fixed to `openai/gpt-5.6-sol` at `xhigh`.
+- The ChatGPT/Codex host commander is authoritative. OpenAI Astra, Sol, Terra, and Luna routes are returned as `native_host` handoffs using ChatGPT plan usage; the harness never dispatches them through the OpenAI API adapter. API commander mode fails closed.
+- Only xAI/Grok, DeepSeek, and Kimi are executable API providers. Their generation plus Jev requires `HARNESS_ENABLE_PAID_EXECUTION=true`; server-owned accounting and budgets still apply.
 - One batched Jev request may recommend task type, complexity, risk, target, context, parallelism, verification, and review. Jev requires the paid-execution owner gate plus a positive operator-supplied `HARNESS_JEV_CALL_COST_USD` conservative bound. The server reserves that bound as an auxiliary call against the same derived task/day ledger, keeps retries inside the reservation, and charges the bound; missing gates or prices produce explicit unavailable advice and deterministic routing.
 - Every plan exposes requested, recommended, effective routing, and any deterministic overrides.
 - Delegates receive finite evidence packets and only the `request_context` and `report_result` continuation tools. They receive no shell, filesystem, deploy, secret, or financial tools.
@@ -15,9 +16,9 @@ A bounded, BYOK control plane for routing engineering tasks to verified OpenAI, 
 
 ## Verified registry
 
-Catalog and pricing metadata were verified on 2026-09-20. Prices are USD per million input/output tokens: OpenAI Luna 0.20/1.20, Terra 2/12, Sol 4/20, Astra 10/50; xAI Grok 4.6 2/6; DeepSeek Flash 0.30/1.20 and V4 Pro 1.32/3.96 using peak cache-miss input; Kimi K3 3/15 cache-miss input/output. Sources: [OpenAI models](https://developers.openai.com/api/docs/models), [xAI models](https://docs.x.ai/developers/models), [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing), and [Kimi API overview](https://www.kimi.ai/help/kimi-api/api-overview).
+Catalog metadata was verified on 2026-09-20. OpenAI models are native-host targets and therefore have no API price in the execution registry. External API prices are USD per million input/output tokens: xAI Grok 4.6 2/6; DeepSeek Flash 0.30/1.20 and V4 Pro 1.32/3.96 using peak cache-miss input; Kimi K3 3/15 cache-miss input/output. Sources: [OpenAI models](https://developers.openai.com/api/docs/models), [xAI models](https://docs.x.ai/developers/models), [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing), and [Kimi API overview](https://www.kimi.ai/help/kimi-api/api-overview).
 
-The `provider_status` tool can intersect this bounded registry with the model catalog visible to the configured account. There is no silent substitution. Kimi Open Platform is distinct from Kimi Code; use `KIMI_API_KEY` (or the optional `MOONSHOT_API_KEY` alias).
+The `provider_status` tool can intersect the external-provider registry with the model catalog visible to the configured account. For OpenAI it reports `native_host` without reading a key or contacting the API. There is no silent substitution. Kimi Open Platform is distinct from Kimi Code; use `KIMI_API_KEY` (or the optional `MOONSHOT_API_KEY` alias).
 
 ## Run and verify
 
@@ -30,6 +31,6 @@ npm run mcp:smoke
 npm run mcp:http:smoke
 ```
 
-All checks above are offline and make no provider calls. Configure keys only at runtime using `.env.example`; keys and full request bodies are never written to the ledger or errors.
+All checks above are offline and make no provider calls. Configure only the external provider keys you intend to use at runtime using `.env.example`; keys and full request bodies are never written to the ledger or errors.
 
 Start stdio with `npm run mcp`, or authenticated Streamable HTTP with `HARNESS_MCP_TOKEN` set and `npm run mcp:http`. Existing tools remain available: `route_task`, `build_evidence_packet`, `check_continue`, `check_action`, `create_delegation`, `review_route`, and `execute_routed_task`. Additive operations expose `resume_routed_task`, provider status, model catalog, job status, task usage, and cancellation.

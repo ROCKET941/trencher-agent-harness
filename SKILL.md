@@ -1,16 +1,16 @@
 ---
 name: trencher-frontier-router
-description: Route bounded engineering work across verified OpenAI, xAI, DeepSeek, and Kimi API delegates with deterministic safety and server-owned accounting.
+description: Route bounded engineering work to native ChatGPT/Codex agents or verified xAI, DeepSeek, and Kimi API delegates with deterministic safety and server-owned accounting.
 ---
 
 # Trencher Frontier Router
 
-Use for coding or research tasks that benefit from a paid API delegate. Prefer native host subagents when the host already provides them; this skill's API delegates are separately billed remote models and may receive provider-visible task material.
+Use for coding or research tasks that benefit from bounded routing. Astra, Sol, Terra, and Luna must run as native ChatGPT/Codex host agents using plan usage. Only Grok/xAI, DeepSeek, and Kimi run as separately billed API delegates and may receive provider-visible task material.
 
 ## Sequence
 1. Build a compact evidence packet; never bulk-read a repository.
 2. Apply deterministic policy and risk classification.
-3. Keep host commander mode unless the owner explicitly opts into the billed API commander.
+3. Keep native host commander mode. API commander mode is disabled and fails closed.
 4. Send retrieval/mechanical work to `scout`, normal implementation to `engineer`, and ambiguous high-risk diagnosis to `deep_debugger`.
 5. If configured, ask Jev once for the batched plan; deterministic policy and the verified model registry remain authoritative.
 7. After one failed implementation require new evidence before another attempt.
@@ -26,4 +26,4 @@ Use for coding or research tasks that benefit from a paid API delegate. Prefer n
 Use `exact`, `adjacent` or exceptional `exploratory` retrieval as assigned. Delegations receive compact packets, not transcripts. Individual entries are size-capped and marked when truncated. Before provider execution, conservatively estimate the serialized request and block it when it exceeds `HARNESS_MAX_ESTIMATED_INPUT_TOKENS` (falling back to `HARNESS_MAX_INPUT_TOKENS`).
 
 ## Hard boundaries
-A model or Jev recommendation cannot authorize deployment, destructive Git operations, secret access, financial execution, wallet-permission changes, retry-budget expansion, or path traversal. Unknown pricing, unsupported efforts, unavailable models, uncertain billing, missing new causal evidence, and duplicate host/API commanders stop execution.
+A model or Jev recommendation cannot authorize deployment, destructive Git operations, secret access, financial execution, wallet-permission changes, retry-budget expansion, path traversal, or OpenAI API execution. Unknown pricing, unsupported efforts, unavailable models, uncertain billing, and missing new causal evidence stop execution. A native OpenAI route returns a host handoff; it is never silently converted into an API call.

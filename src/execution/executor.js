@@ -6,6 +6,7 @@ import { resolveBudget, checkEstimatedInput } from '../budget/executionBudget.js
 import { AccountingStore } from './accountingStore.js'
 import { taskIdentityFromContext, digestValue } from './taskIdentity.js'
 import { normalizeApprovedEvidence, safeRelativePath } from './boundedEvidence.js'
+import { providerExecutionPolicy } from '../policy/providerExecution.js'
 
 const stores=new Map(), active=new Map()
 export function taskIdentity(delegation,workspace=''){return taskIdentityFromContext(delegation.context,workspace)}
@@ -29,6 +30,8 @@ function reportArtifact(result){const call=(result.metadata?.toolCalls||[]).find
 function validatedTarget(provider,model,effort){let validated=validateModel({provider,model,effort});if(!validated.allowed&&!['openai','xai','deepseek','kimi'].includes(provider))validated={allowed:true,entry:{provider,id:model,inputPerMTok:0,outputPerMTok:0,efforts:[effort].filter(Boolean)},localAdapter:true};return validated}
 
 async function dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,parentJobId}){
+  const providerPolicy=providerExecutionPolicy(provider)
+  if(!providerPolicy.allowed)return{executed:false,reason:providerPolicy.reason,executionMode:providerPolicy.executionMode,billingSource:providerPolicy.billingSource,provider,model,effort,taskId:resolvedTaskId}
   const adapter=getProvider(provider),payload=typeof adapter.prepare==='function'?adapter.prepare(request):request,preflight=checkEstimatedInput(payload,budget)
   if(!preflight.allowed)return{executed:false,reason:'estimated-input-too-large',preflight,taskId:resolvedTaskId}
   const validated=validatedTarget(provider,model,effort)

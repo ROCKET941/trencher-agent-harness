@@ -10,11 +10,13 @@ import {listModels,validateModel} from '../src/providers/catalog.js'
 const query={role:'engineer',model:'gpt-5.6-terra',effort:'high',task:'bounded',context:{files:['src/a.js']},instruction:'work',budget:{maxOutputTokens:25}}
 const response=value=>({ok:true,status:200,json:async()=>value})
 
-test('verified catalog exposes only canonical model efforts and dated prices',()=>{
+test('verified catalog separates native host models from priced API delegates',()=>{
   assert.equal(listModels().length,8)
   assert.equal(validateModel({provider:'deepseek',model:'deepseek-flash',effort:'medium'}).allowed,false)
   assert.equal(validateModel({provider:'openai',model:'gpt-5.6-sol',effort:'max'}).allowed,true)
   assert.ok(listModels().every(model=>model.verifiedAt==='2026-09-20'&&model.source.startsWith('https://')))
+  assert.ok(listModels({provider:'openai'}).every(model=>model.executionMode==='native_host'&&model.inputPerMTok===null&&model.outputPerMTok===null))
+  assert.ok(listModels({provider:'xai'}).every(model=>model.executionMode==='external_api'))
 })
 
 test('OpenAI Responses request and response contract',async()=>{
@@ -63,4 +65,10 @@ test('provider timeout aborts the request with a bounded sanitized error',async(
 test('provider status intersects account-visible catalog and never returns key',async()=>{
   const result=await getProviderStatus('xai',{env:{XAI_API_KEY:'private'},refresh:true,fetchImpl:async()=>response({data:[{id:'grok-4.6'},{id:'other'}]})})
   assert.deepEqual(result.eligible,['grok-4.6']);assert.equal(result.keyEnv,'XAI_API_KEY');assert.equal(JSON.stringify(result).includes('private'),false)
+})
+
+test('OpenAI provider status is native host managed and never contacts the API',async()=>{
+  let calls=0
+  const result=await getProviderStatus('openai',{env:{OPENAI_API_KEY:'must-not-be-used'},refresh:true,fetchImpl:async()=>{calls++;throw new Error('must not call')}})
+  assert.equal(result.executionMode,'native_host');assert.equal(result.reason,'native-host-managed-no-api-key-required');assert.equal(result.keyEnv,null);assert.equal(calls,0)
 })

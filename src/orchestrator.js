@@ -6,6 +6,7 @@ import { nextAttemptState } from './policy/antiLoop.js'
 import { createDelegation } from './providers/registry.js'
 import { resolveRoleTarget } from './execution/roleResolver.js'
 import { validateModel, eligibleForRole } from './providers/catalog.js'
+import { executionModeForProvider } from './policy/providerExecution.js'
 
 const rank = { scout: 0, engineer: 1, deep_debugger: 2, reviewer: 2, exceptional: 3 }
 const profileRank = { tight: 0, normal: 1, expanded: 2 }
@@ -77,7 +78,10 @@ export async function planTask(input, options = {}) {
   if(validateModel(effective).allowed===false){overrides.push({field:'target',requested:effective,applied:fallbackTarget,reason:'verified-registry-required'});effective={role:route.role,...fallbackTarget}}
   const recommendedValidity=validateModel(recommended)
   if(rank[recommended.role]>=rank[route.role]&&recommendedValidity.allowed&&eligibleForRole(route.role,recommendedValidity.entry))effective=requested?effective:recommended
+  recommended={...recommended,executionMode:executionModeForProvider(recommended.provider)}
+  effective={...effective,executionMode:executionModeForProvider(effective.provider)}
   const parallelRecommended=advice?.parallelRequired?.probability>=number(env.JEV_MIN_CONFIDENCE,0.70)&&['independent','critical_path'].includes(advice?.parallelJustification?.choice)?2:1
-  const routingDecision={requested,recommended,effective,overrides,parallel:{recommended:parallelRecommended,effective:Math.min(parallelRecommended,number(env.HARNESS_MAX_PARALLEL,1)),justification:advice?.parallelJustification?.choice||'none'}}
+  const handoff=effective.executionMode==='native_host'?{required:true,mode:'native_host',billingSource:'chatgpt_plan',role:effective.role,provider:effective.provider,model:effective.model,effort:effective.effort}:null
+  const routingDecision={requested,recommended,effective,overrides,handoff,parallel:{recommended:parallelRecommended,effective:Math.min(parallelRecommended,number(env.HARNESS_MAX_PARALLEL,1)),justification:advice?.parallelJustification?.choice||'none'}}
   return { packet, route:{...route,...effective,requested,routingDecision}, delegation: effective.role ? createDelegation(effective.role, packet, policy) : null, advice, policy, review, routingDecision,commander:{mode:'host',apiCommander:false} }
 }

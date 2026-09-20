@@ -124,3 +124,15 @@ test('successful provider execution records actual post-call usage', async () =>
   assert.equal(result.state.inputTokens, 17)
   assert.equal(result.state.outputTokens, 4)
 })
+
+test('OpenAI execution is blocked before an adapter can spend API tokens', async () => {
+  let calls = 0
+  clearProviders()
+  registerProvider('openai', { execute: async () => { calls++; throw new Error('must not execute') } })
+  const result = await executeDelegation({ delegation: { role: 'engineer', context: { task: 'native work' }, instruction: 'work' }, provider: 'openai', model: 'gpt-5.6-terra', effort: 'high', store:new AccountingStore() })
+  assert.equal(result.executed, false)
+  assert.equal(result.reason, 'native-host-agent-required')
+  assert.equal(result.executionMode, 'native_host')
+  assert.equal(result.billingSource, 'chatgpt_plan')
+  assert.equal(calls, 0)
+})

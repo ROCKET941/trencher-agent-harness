@@ -17,7 +17,7 @@ import path from 'node:path'
 const choice=value=>({type:'choice',choice:value,confidence:1,probabilities:{[value]:1}})
 const noul=value=>({type:'noul',noul:value})
 const report=(status='complete')=>({name:'report_result',arguments:JSON.stringify({status,findings:['ok'],artifact:'bounded',evidence:[],tests:[],blockers:status==='complete'?[]:['not complete']})})
-const tempStore=async(env={})=>new AccountingStore({file:path.join(await mkdtemp(path.join(os.tmpdir(),'harness-api-commander-')),'ledger.json'),env})
+const tempStore=async(env={})=>new AccountingStore({file:path.join(await mkdtemp(path.join(os.tmpdir(),'harness-routing-')),'ledger.json'),env})
 
 test('exact caller search is not high risk because symbol contains swap',()=>assert.equal(classifyRisk('Find every caller of reconcileSwapFill').risk,'normal'))
 test('actual swap execution remains high risk',()=>assert.equal(classifyRisk('Execute the swap with real funds').risk,'high'))
@@ -33,6 +33,7 @@ test('Jev uses one batched planning request and caches on policy/registry/contex
   const packet=createEvidencePacket({task:'unique batched plan 98127',files:['a.js']})
   const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},store=await tempStore(env),first=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'}),second=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'})
   assert.equal(calls,1);assert.equal(second.cacheHit,true);assert.ok(sent.questions.task_type);assert.ok(sent.questions.parallel_justification);assert.ok(sent.questions.verification);assert.ok(sent.state.registry_version)
+  assert.equal(sent.state.target_execution_modes['openai:gpt-5.6-terra'],'native_host');assert.equal(sent.state.target_execution_modes['xai:grok-4.6'],'external_api')
   assert.equal(first.target.choice,'openai:gpt-5.6-terra:high')
 })
 
@@ -51,49 +52,29 @@ test('caller budgets cannot inflate server policy',()=>{
   assert.deepEqual({input:budget.maxInputTokens,output:budget.maxOutputTokens,parallel:budget.maxParallel,attempts:budget.maxAttempts},{input:100,output:50,parallel:2,attempts:2})
 })
 
-test('API commander requires explicit opt-in and rejects duplicate commander',async()=>{
-  assert.equal((await executeRoutedTask({task:'implement x',commanderMode:'api'},{useJev:false})).reason,'api-commander-requires-explicit-opt-in')
-  assert.equal((await executeRoutedTask({task:'implement x',commanderMode:'api',apiCommanderOptIn:true,hostCommanderActive:true},{useJev:false})).reason,'duplicate-host-and-api-commander')
-  assert.equal((await executeRoutedTask({task:'implement x',commanderMode:'api',apiCommanderOptIn:true},{useJev:false,env:{}})).reason,'api-commander-owner-gate-disabled')
+test('API commander always fails closed under native host policy',async()=>{
+  let calls=0;clearProviders();registerProvider('openai',{execute:async()=>{calls++;throw new Error('must not dispatch')}})
+  const result=await executeRoutedTask({task:'implement x',commanderMode:'api',apiCommanderOptIn:true},{useJev:false,env:{HARNESS_ENABLE_API_COMMANDER:'true',HARNESS_ENABLE_PAID_EXECUTION:'true'}})
+  assert.equal(result.reason,'api-commander-disabled-native-host-policy');assert.equal(result.execution,null);assert.equal(calls,0)
 })
 
 test('paid execution requires a trusted server-side owner gate',async()=>{
-  const result=await executeRoutedTask({task:'implement x'},{useJev:false,env:{}})
-  assert.equal(result.reason,'paid-execution-owner-gate-disabled');assert.equal(result.plan,null);assert.equal(result.execution,null)
+  const requestedRoute={provider:'xai',model:'grok-4.6',effort:'high'},result=await executeRoutedTask({task:'implement x',requestedRoute},{useJev:false,env:{}})
+  assert.equal(result.reason,'paid-execution-owner-gate-disabled');assert.equal(result.target.executionMode,'external_api');assert.equal(result.execution,null)
 })
 
-test('API commander plans, routes one worker, then performs final Sol review with shared accounting',async()=>{
-  const calls=[];clearProviders();registerProvider('openai',{execute:async query=>{calls.push({role:query.role,model:query.model,effort:query.effort,phase:query.context.phase});return normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:10,outputTokens:5},metadata:{toolCalls:[report()]}})}})
-  const env={HARNESS_ENABLE_API_COMMANDER:'true',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_PARALLEL:'1',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50'},store=await tempStore(env)
-  const result=await executeRoutedTask({task:'implement a bounded change',commanderMode:'api',apiCommanderOptIn:true,taskId:'caller-controlled'},{useJev:false,env,store})
-  assert.deepEqual(calls.map(call=>[call.model,call.effort,call.phase]),[['gpt-5.6-sol','xhigh','planning'],['gpt-5.6-terra','high',undefined],['gpt-5.6-sol','xhigh','final-review']])
-  assert.equal(result.reason,undefined);assert.equal(result.execution.executed,true);assert.equal(result.review.executed,true)
-  assert.equal(result.planning.taskId,result.execution.taskId);assert.equal(result.execution.taskId,result.review.taskId);assert.notEqual(result.execution.taskId,'caller-controlled')
-  const usage=await store.getUsage(result.execution.taskId)
-  assert.equal(usage.task.starts,1);assert.equal(usage.task.auxiliaryStarts,2);assert.ok(Math.abs(usage.task.actualCostUsd-.00036)<1e-12);assert.ok(Math.abs(usage.daily.actualCostUsd-.00036)<1e-12)
-})
-
-test('host commander mode dispatches exactly one routed worker',async()=>{
-  const calls=[];clearProviders();registerProvider('openai',{execute:async query=>{calls.push([query.model,query.effort]);return normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{toolCalls:[report()]}})}})
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50'},result=await executeRoutedTask({task:'implement one host change',commanderMode:'host'},{useJev:false,env,store:await tempStore(env)})
-  assert.deepEqual(calls,[['gpt-5.6-terra','high']]);assert.equal(result.execution.executed,true);assert.equal(result.planning,undefined);assert.equal(result.review,undefined)
-})
-
-test('API commander fails closed before worker or after an incomplete review',async()=>{
-  for(const incompletePhase of ['planning','final-review']){
-    const calls=[];clearProviders();registerProvider('openai',{execute:async query=>{calls.push(query.context.phase||'worker');const status=query.context.phase===incompletePhase?'incomplete':'complete';return normalizeResult({provider:'openai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{toolCalls:[report(status)]}})}})
-    const env={HARNESS_ENABLE_API_COMMANDER:'true',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50'},result=await executeRoutedTask({task:`bounded ${incompletePhase}`,commanderMode:'api',apiCommanderOptIn:true},{useJev:false,env,store:await tempStore(env)})
-    assert.equal(result.reason,incompletePhase==='planning'?'api-planning-incomplete':'api-review-incomplete')
-    assert.deepEqual(calls,incompletePhase==='planning'?['planning']:['planning','worker','final-review'])
-  }
-})
-
-test('API commander gates reject duplicate ownership before provider dispatch',async()=>{
+test('native OpenAI route returns a ChatGPT plan handoff without provider invocation',async()=>{
   let calls=0;clearProviders();registerProvider('openai',{execute:async()=>{calls++;throw new Error('must not dispatch')}})
-  const enabled={HARNESS_ENABLE_API_COMMANDER:'true',HARNESS_ENABLE_PAID_EXECUTION:'true'}
-  assert.equal((await executeRoutedTask({task:'x',commanderMode:'api',apiCommanderOptIn:true,hostCommanderActive:true},{useJev:false,env:enabled})).reason,'duplicate-host-and-api-commander')
-  assert.equal((await executeRoutedTask({task:'x',commanderMode:'api',apiCommanderOptIn:true},{useJev:false,env:{HARNESS_ENABLE_PAID_EXECUTION:'true'}})).reason,'api-commander-owner-gate-disabled')
-  assert.equal(calls,0)
+  const env={},result=await executeRoutedTask({task:'implement one host change'},{useJev:false,env,store:await tempStore(env)})
+  assert.equal(result.reason,'native-host-agent-required');assert.equal(result.execution,null);assert.equal(result.target.executionMode,'native_host')
+  assert.equal(result.handoff.billingSource,'chatgpt_plan');assert.equal(result.handoff.model,'gpt-5.6-terra');assert.equal(calls,0)
+})
+
+test('host commander dispatches one explicitly selected external API worker',async()=>{
+  const calls=[];clearProviders();registerProvider('xai',{execute:async query=>{calls.push([query.model,query.effort]);return normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{toolCalls:[report()]}})}})
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50'}
+  const requestedRoute={provider:'xai',model:'grok-4.6',effort:'high'},result=await executeRoutedTask({task:'implement one external change',requestedRoute},{useJev:false,env,store:await tempStore(env)})
+  assert.deepEqual(calls,[['grok-4.6','high']]);assert.equal(result.target.executionMode,'external_api');assert.equal(result.execution.executed,true);assert.equal(result.reason,undefined)
 })
 
 test('packet reports count and entry truncation explicitly',()=>{
