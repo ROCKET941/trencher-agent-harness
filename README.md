@@ -7,12 +7,16 @@ A small control plane for routing engineering work to the cheapest capable front
 - optional Jev/TypeSafe decision adapter boundary
 - logical agent roles: scout, engineer, deep debugger, reviewer, exceptional escalation
 - compact evidence packets/task ledgers
+- Jev-selected finite context profiles (`tight`, `normal`, `expanded`) and retrieval modes (`exact`, `adjacent`, `exploratory`)
+- deterministic per-item compaction and a pre-provider estimated-input guard
 - two-strike anti-loop controller
 - deterministic protected-action policy
 - provider-neutral delegation requests
 - ChatGPT/Codex-facing `SKILL.md`
 
 Jev is a **decision layer**, not an authority. Hard safety rules always win.
+
+`HARNESS_MAX_INPUT_TOKENS` remains the accumulated actual-usage circuit breaker. `HARNESS_MAX_ESTIMATED_INPUT_TOKENS` is the conservative per-request preflight ceiling; when omitted it inherits the former value. High-risk unknown-root-cause work cannot be narrowed by Jev, and expanded/exploratory scope requires a concrete evidence gap.
 
 ## Quick start
 ```bash
