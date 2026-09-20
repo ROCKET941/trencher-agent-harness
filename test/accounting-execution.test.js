@@ -39,8 +39,13 @@ test('auxiliary calls reserve cost and concurrency without consuming worker atte
   assert.equal(second.allowed,true);assert.equal(usage.task.starts,2);assert.equal(usage.task.auxiliaryStarts,2);assert.equal(usage.task.actualCostUsd,.03)
 })
 
-test('two starts apply across worker and model changes and third stops',async()=>{
-  const store=await tempStore({HARNESS_MAX_PARALLEL:'3'}),a=await store.reserve({...reservation,evidenceHash:'first'});await store.finalize(a.job.id,{status:'failed',actualCostUsd:0});const withoutEvidence=await store.reserve({...reservation,provider:'xai',model:'grok-4.6',evidenceHash:'first'});assert.equal(withoutEvidence.reason,'second-attempt-requires-new-causal-evidence');const b=await store.reserve({...reservation,provider:'xai',model:'grok-4.6',evidenceHash:'new-cause'});await store.finalize(b.job.id,{status:'failed',actualCostUsd:0});const c=await store.reserve({...reservation,provider:'deepseek',model:'deepseek-v4-pro',evidenceHash:'third'});assert.equal(c.allowed,false);assert.equal(c.reason,'task-start-limit')
+test('third worker start requires owner authorization and new causal evidence',async()=>{
+  const store=await tempStore({HARNESS_MAX_PARALLEL:'3'}),a=await store.reserve({...reservation,evidenceHash:'first'});await store.finalize(a.job.id,{status:'failed',actualCostUsd:0})
+  const withoutEvidence=await store.reserve({...reservation,provider:'xai',model:'grok-4.6',evidenceHash:'first'});assert.equal(withoutEvidence.reason,'second-attempt-requires-new-causal-evidence')
+  const b=await store.reserve({...reservation,provider:'xai',model:'grok-4.6',evidenceHash:'new-cause'});await store.finalize(b.job.id,{status:'failed',actualCostUsd:0})
+  const withoutOwner=await store.reserve({...reservation,provider:'deepseek',model:'deepseek-v4-pro',evidenceHash:'third'});assert.equal(withoutOwner.reason,'third-attempt-requires-owner-authorization')
+  const c=await store.reserve({...reservation,provider:'deepseek',model:'deepseek-v4-pro',evidenceHash:'third',ownerAuthorizedRetry:true,retryReason:'new trace isolates the branch'});assert.equal(c.allowed,true);assert.equal(c.job.ownerAuthorizedRetry,true);await store.finalize(c.job.id,{status:'failed',actualCostUsd:0})
+  const fourth=await store.reserve({...reservation,evidenceHash:'fourth',ownerAuthorizedRetry:true,retryReason:'another retry'});assert.equal(fourth.allowed,false);assert.equal(fourth.reason,'task-start-limit')
 })
 
 test('uncertain billing releases concurrency but fails closed for the task',async()=>{
@@ -123,5 +128,5 @@ test('workspace and root-cause changes cannot reset server task identity',async(
   const first=await executeDelegation({delegation:base,provider:'mock-identity',model:'local',workspace:'repo-a',store})
   const second=await executeDelegation({delegation:{...base,context:{...base.context,rootCause:'changed'}},provider:'mock-identity',model:'local',workspace:'repo-b',store})
   const third=await executeDelegation({delegation:{...base,context:{...base.context,rootCause:'changed again'}},provider:'mock-identity',model:'local',workspace:'repo-c',store})
-  assert.equal(first.taskId,second.taskId);assert.equal(second.taskId,third.taskId);assert.equal(second.executed,true);assert.equal(third.executed,false);assert.equal(third.reason,'task-start-limit')
+  assert.equal(first.taskId,second.taskId);assert.equal(second.taskId,third.taskId);assert.equal(second.executed,true);assert.equal(third.executed,false);assert.equal(third.reason,'third-attempt-requires-owner-authorization')
 })

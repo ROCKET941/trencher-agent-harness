@@ -6,3 +6,4 @@ coverage/
 dist/
 *.log
 .state/
+benchmark-results/

@@ -1,0 +1,106 @@
+{
+  "version": "2026-09-20",
+  "jevRouting": [
+    {
+      "id": "exact-caller-search",
+      "input": {
+        "task": "Find every caller of reconcileSwapFill in a large production repository.",
+        "files": ["src/swap/reconcile.ts"],
+        "evidence": ["The symbol definition is known; callers have not yet been enumerated."]
+      },
+      "expect": {
+        "roles": ["scout", "engineer", "deep_debugger", "exceptional"],
+        "maxContextProfile": "normal",
+        "maxRetrievalMode": "adjacent",
+        "reviewRequired": false
+      }
+    },
+    {
+      "id": "localized-known-root-cause",
+      "input": {
+        "task": "Fix the stale Trade page quote after the selected token changes.",
+        "rootCause": "The quote memo omits selectedToken from its dependency list.",
+        "files": ["src/trade/quote.ts"],
+        "tests": ["src/trade/quote.test.ts"],
+        "evidence": ["The stale value reproduces only when selectedToken changes without an amount change."]
+      },
+      "expect": {
+        "roles": ["engineer", "deep_debugger", "exceptional"],
+        "maxContextProfile": "normal",
+        "maxRetrievalMode": "adjacent",
+        "reviewRequired": false
+      }
+    },
+    {
+      "id": "high-risk-unknown-root-cause",
+      "input": {
+        "task": "Diagnose a production financial settlement race condition that can duplicate execution.",
+        "risk": "high",
+        "openQuestions": ["Which concurrent path wins the idempotency write?"]
+      },
+      "expect": {
+        "roles": ["deep_debugger", "exceptional"],
+        "minContextProfile": "expanded",
+        "minRetrievalMode": "exploratory",
+        "reviewRequired": true
+      }
+    },
+    {
+      "id": "high-risk-known-root-cause",
+      "input": {
+        "task": "Fix duplicate financial settlement caused by a non-atomic idempotency check.",
+        "risk": "high",
+        "rootCause": "The check and write occur in separate transactions.",
+        "files": ["src/settlement/idempotency.ts"],
+        "tests": ["src/settlement/idempotency.concurrent.test.ts"]
+      },
+      "expect": {
+        "roles": ["engineer", "deep_debugger", "exceptional"],
+        "maxContextProfile": "normal",
+        "maxRetrievalMode": "adjacent",
+        "reviewRequired": true
+      }
+    }
+  ],
+  "providerTasks": [
+    {
+      "id": "patch-clamp",
+      "kind": "clamp_patch",
+      "task": "Apply a one-line fix to src/clamp.js. Current file: export function clamp(n, min, max) { return Math.min(min, Math.max(max, n)); }. The bounds are reversed. Return a compact unified diff for src/clamp.js only. Do not request more context.",
+      "rootCause": "Math.min and Math.max are applied in the wrong order.",
+      "files": ["src/clamp.js"],
+      "tests": ["clamp(-2, 0, 10) === 0", "clamp(5, 0, 10) === 5", "clamp(12, 0, 10) === 10"],
+      "evidence": ["Only the return expression is incorrect; the public signature must not change."]
+    },
+    {
+      "id": "caller-map",
+      "kind": "caller_map",
+      "task": "From the supplied exact search evidence, identify every real caller of reconcileSwapFill. Return a compact JSON array of source:line pointers in artifact. Do not include definitions, comments, tests, or string literals. Do not request more context.",
+      "rootCause": "Exact search results are already supplied and only need semantic filtering.",
+      "files": ["src/swap/reconcile.ts", "src/orders/finalize.ts", "src/retry/replay.ts"],
+      "evidence": [
+        "src/swap/reconcile.ts:7 export function reconcileSwapFill(fill) {",
+        "src/orders/finalize.ts:18 return reconcileSwapFill(fill);",
+        "src/retry/replay.ts:42 const reconciled = await reconcileSwapFill(nextFill);",
+        "src/docs/flow.ts:9 // reconcileSwapFill is invoked after finalization",
+        "test/reconcile.test.ts:21 reconcileSwapFill(fakeFill);",
+        "src/metrics/names.ts:4 export const metric = 'reconcileSwapFill';"
+      ],
+      "tests": ["Result contains exactly src/orders/finalize.ts:18 and src/retry/replay.ts:42."]
+    },
+    {
+      "id": "async-root-cause",
+      "kind": "async_root_cause",
+      "task": "Diagnose the bounded failure using only the evidence. State the root cause and the smallest correction in artifact. Do not request more context.",
+      "rootCause": "The evidence is sufficient to identify one missing await.",
+      "files": ["src/queue/shutdown.ts"],
+      "evidence": [
+        "shutdown() calls flushQueue() and immediately closes the database.",
+        "flushQueue() returns a Promise that resolves after pending writes commit.",
+        "The caller does not await flushQueue().",
+        "Logs: close database -> write attempted on closed connection -> intermittent lost final event."
+      ],
+      "tests": ["The answer must identify the missing await on flushQueue before database close."]
+    }
+  ]
+}

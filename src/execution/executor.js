@@ -29,7 +29,7 @@ function contextRequest(result){const call=(result.metadata?.toolCalls||[]).find
 function reportArtifact(result){const call=(result.metadata?.toolCalls||[]).find(item=>item.name==='report_result');try{return call?(typeof call.arguments==='string'?JSON.parse(call.arguments):call.arguments):null}catch{return null}}
 function validatedTarget(provider,model,effort){let validated=validateModel({provider,model,effort});if(!validated.allowed&&!['openai','xai','deepseek','kimi'].includes(provider))validated={allowed:true,entry:{provider,id:model,inputPerMTok:0,outputPerMTok:0,efforts:[effort].filter(Boolean)},localAdapter:true};return validated}
 
-async function dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,parentJobId}){
+async function dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,parentJobId,ownerAuthorizedRetry=false,retryReason=''}){
   const providerPolicy=providerExecutionPolicy(provider)
   if(!providerPolicy.allowed)return{executed:false,reason:providerPolicy.reason,executionMode:providerPolicy.executionMode,billingSource:providerPolicy.billingSource,provider,model,effort,taskId:resolvedTaskId}
   const adapter=getProvider(provider),payload=typeof adapter.prepare==='function'?adapter.prepare(request):request,preflight=checkEstimatedInput(payload,budget)
@@ -40,7 +40,7 @@ async function dispatch({request,provider,model,effort,budget,ledger,resolvedTas
   if(reservedCostUsd==null)return{executed:false,reason:'unknown-price',preflight,taskId:resolvedTaskId}
   const effectiveDeadlineMs=Number(deadlineMs)||Number(request.timeoutMs)||30000
   const deadlineAt=new Date(Date.now()+effectiveDeadlineMs+1000).toISOString()
-  const reservationInput={taskId:resolvedTaskId,idempotencyKey,provider,model,effort,reservedCostUsd,deadlineAt,evidenceHash,attemptClass}
+  const reservationInput={taskId:resolvedTaskId,idempotencyKey,provider,model,effort,reservedCostUsd,deadlineAt,evidenceHash,attemptClass,ownerAuthorizedRetry,retryReason}
   const reservation=parentJobId?await ledger.reserveContinuation(parentJobId,{...reservationInput,maxContinuationIndex:Math.max(0,budget.maxDelegations-1)}):await ledger.reserve(reservationInput)
   if(!reservation.allowed)return{executed:false,reason:reservation.reason,reservation,preflight,taskId:resolvedTaskId}
   if(reservation.deduplicated)return{executed:false,reason:'idempotent-replay',job:reservation.job,preflight,taskId:resolvedTaskId}
@@ -64,11 +64,11 @@ async function dispatch({request,provider,model,effort,budget,ledger,resolvedTas
   finally{clearTimeout(deadlineTimer);signal?.removeEventListener?.('abort',forward);active.delete(reservation.job.id)}
 }
 
-export async function executeDelegation({delegation,provider,model,effort,budget:asked,env=process.env,idempotencyKey,workspace='',deadlineMs,store,signal,attemptClass='worker'}) {
+export async function executeDelegation({delegation,provider,model,effort,budget:asked,env=process.env,idempotencyKey,workspace='',deadlineMs,store,signal,attemptClass='worker',ownerAuthorizedRetry=false,retryReason=''}) {
   const budget=resolveBudget(asked,env),ledger=store||getAccountingStore(env),resolvedTaskId=taskIdentity(delegation,workspace)
   const request={role:delegation.role,task:delegation.context?.task||'',context:delegation.context||{},instruction:delegation.instruction||'',provider,model,effort,budget,timeoutMs:Math.min(Number(env.HARNESS_PROVIDER_TIMEOUT_MS)||30000,Number(deadlineMs)||Infinity)}
   const evidenceHash=digestValue({rootCause:delegation.context?.rootCause||null,evidence:delegation.context?.evidence||[],facts:delegation.context?.facts||[],inspected:delegation.context?.inspected||[]})
-  return dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash})
+  return dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,ownerAuthorizedRetry,retryReason})
 }
 
 export async function resumeDelegation({jobId,approvedEvidence,budget:asked,env=process.env,deadlineMs,store,signal}){

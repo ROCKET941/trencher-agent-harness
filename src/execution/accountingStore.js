@@ -23,12 +23,14 @@ export class AccountingStore {
     const task=state.tasks[input.taskId]||blankTask();task.starts=Number(task.starts||0);task.auxiliaryStarts=Number(task.auxiliaryStarts||0);task.inputTokens=Number(task.inputTokens||0);task.outputTokens=Number(task.outputTokens||0)
     if(task.uncertainBilling)return{allowed:false,reason:'uncertain-billing',scope:'task'}
     if(attemptClass==='worker'&&task.starts>=limits.maxStartsPerTask)return{allowed:false,reason:'task-start-limit',starts:task.starts,limit:limits.maxStartsPerTask}
-    if(attemptClass==='worker'&&task.starts===1&&(!input.evidenceHash||input.evidenceHash===task.lastEvidenceHash))return{allowed:false,reason:'second-attempt-requires-new-causal-evidence'}
+    if(attemptClass==='worker'&&task.starts>=1&&(!input.evidenceHash||input.evidenceHash===task.lastEvidenceHash))return{allowed:false,reason:task.starts===1?'second-attempt-requires-new-causal-evidence':'retry-requires-new-causal-evidence'}
+    if(attemptClass==='worker'&&task.starts>=2&&!input.ownerAuthorizedRetry)return{allowed:false,reason:'third-attempt-requires-owner-authorization'}
+    if(attemptClass==='worker'&&task.starts>=2&&!String(input.retryReason||'').trim())return{allowed:false,reason:'owner-authorized-retry-requires-reason'}
     const daily=state.days[day]||{actualCostUsd:0,reservedCostUsd:0},cost=Number(input.reservedCostUsd)
     if(!Number.isFinite(cost)||cost<0)return{allowed:false,reason:'unknown-price'}
     if(task.actualCostUsd+task.reservedCostUsd+cost>limits.taskCostUsd)return{allowed:false,reason:'task-cost-limit'}
     if(daily.actualCostUsd+daily.reservedCostUsd+cost>limits.dailyCostUsd)return{allowed:false,reason:'daily-cost-limit'}
-    const job={id:randomUUID(),taskId:input.taskId,idempotencyKey:input.idempotencyKey||null,attemptClass,provider:input.provider,model:input.model,effort:input.effort,status:'running',createdAt:new Date(now).toISOString(),deadlineAt:input.deadlineAt||null,evidenceHash:input.evidenceHash||null,reservedCostUsd:cost,actualCostUsd:null,usage:null,error:null,parentJobId:parentJob?.id||null,continuationIndex:parentJob?Number(parentJob.continuationIndex||0)+1:0}
+    const job={id:randomUUID(),taskId:input.taskId,idempotencyKey:input.idempotencyKey||null,attemptClass,provider:input.provider,model:input.model,effort:input.effort,status:'running',createdAt:new Date(now).toISOString(),deadlineAt:input.deadlineAt||null,evidenceHash:input.evidenceHash||null,ownerAuthorizedRetry:Boolean(input.ownerAuthorizedRetry),retryReason:String(input.retryReason||'').trim().slice(0,500)||null,reservedCostUsd:cost,actualCostUsd:null,usage:null,error:null,parentJobId:parentJob?.id||null,continuationIndex:parentJob?Number(parentJob.continuationIndex||0)+1:0}
     state.jobs[job.id]=job
     if(attemptClass==='worker'){task.starts++;task.lastEvidenceHash=input.evidenceHash||task.lastEvidenceHash}else task.auxiliaryStarts++
     task.reservedCostUsd+=cost;state.tasks[input.taskId]=task;daily.reservedCostUsd+=cost;state.days[day]=daily

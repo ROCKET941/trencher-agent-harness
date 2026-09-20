@@ -10,8 +10,8 @@ export function resolveBudget(input = {}, env = process.env) {
     maxEstimatedInputTokens: Math.min(positiveInt(input.maxEstimatedInputTokens,ceilingEstimated),ceilingEstimated,maxInputTokens),
     maxOutputTokens: Math.min(positiveInt(input.maxOutputTokens,ceilingOutput),ceilingOutput),
     maxDelegations: positiveInt(env.HARNESS_MAX_DELEGATIONS,2),
-    maxParallel: Math.min(3,positiveInt(env.HARNESS_MAX_PARALLEL,1)),
-    maxAttempts: Math.min(2,positiveInt(env.HARNESS_MAX_ATTEMPTS,2))
+    maxParallel: Math.min(routing.limits.hardMaxParallel,positiveInt(env.HARNESS_MAX_PARALLEL,routing.limits.maxParallel)),
+    maxAttempts: Math.min(routing.limits.maxAttempts,positiveInt(env.HARNESS_MAX_ATTEMPTS,routing.limits.maxAttempts))
   }
 }
 export function checkExecutionBudget(state = {}, budget = resolveBudget()) {

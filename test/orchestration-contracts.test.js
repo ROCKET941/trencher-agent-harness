@@ -5,7 +5,7 @@ import {askRoutingJev} from '../src/router/jev.js'
 import {createEvidencePacket} from '../src/context/evidencePacket.js'
 import {planTask} from '../src/orchestrator.js'
 import {authorizeAction} from '../src/policy/safety.js'
-import {executeRoutedTask} from '../src/mcp/tools-v04.js'
+import {executeRoutedTask,providerReadiness} from '../src/mcp/tools-v04.js'
 import {resolveBudget} from '../src/budget/executionBudget.js'
 import {AccountingStore} from '../src/execution/accountingStore.js'
 import {registerProvider,clearProviders} from '../src/providers/registry-v12.js'
@@ -14,7 +14,7 @@ import {mkdtemp} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-const choice=value=>({type:'choice',choice:value,confidence:1,probabilities:{[value]:1}})
+const choice=(value,confidence=1)=>({type:'choice',choice:value,confidence,probabilities:{[value]:1}})
 const noul=value=>({type:'noul',noul:value})
 const report=(status='complete')=>({name:'report_result',arguments:JSON.stringify({status,findings:['ok'],artifact:'bounded',evidence:[],tests:[],blockers:status==='complete'?[]:['not complete']})})
 const tempStore=async(env={})=>new AccountingStore({file:path.join(await mkdtemp(path.join(os.tmpdir(),'harness-routing-')),'ledger.json'),env})
@@ -42,6 +42,45 @@ test('route exposes requested recommended effective and deterministic overrides'
   assert.equal(plan.routingDecision.requested.role,'scout');assert.equal(plan.routingDecision.effective.role,'deep_debugger');assert.ok(plan.routingDecision.overrides.length>0)
 })
 
+test('validated low-confidence Jev target remains authoritative and enables parallel native subagents',async()=>{
+  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer',.31),target:choice('openai:gpt-5.6-luna:high',.28),context_profile:choice('tight',.9),retrieval_mode:choice('adjacent',.9),expand_context:noul(0),parallel_required:noul(.86),parallel_justification:choice('independent'),review_required:noul(0)},usage:{}})})
+  const env={...{TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},JEV_MIN_CONFIDENCE:'.70',HARNESS_MAX_PARALLEL:'3'}
+  const plan=await planTask({task:'implement three disjoint bounded components',files:['src/a.js','src/b.js','src/c.js']},{env,store:await tempStore(env),fetchImpl})
+  assert.equal(plan.route.model,'gpt-5.6-luna');assert.equal(plan.route.effort,'high');assert.equal(plan.routingDecision.selection.target.source,'jev')
+  assert.equal(plan.routingDecision.selection.target.jev.confidence,.28);assert.equal(plan.routingDecision.selection.target.jev.accepted,true)
+  assert.equal(plan.routingDecision.parallel.effective,3);assert.equal(plan.routingDecision.handoff.scope,'subagent-only');assert.equal(plan.routingDecision.handoff.parentModelUnchanged,true)
+  assert.equal(plan.routingDecision.handoff.orchestration.strategy,'parallel-non-overlapping');assert.equal(plan.routingDecision.planReuse.routeOncePerPhase,true)
+})
+
+test('an unapproved host model override cannot replace an available valid Jev target',async()=>{
+  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer',.3),target:choice('openai:gpt-5.6-luna:high',.2),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
+  const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'}
+  const requestedRoute={provider:'openai',model:'gpt-5.6-terra',effort:'high'}
+  const plan=await planTask({task:'implement one bounded module',rootCause:'known',requestedRoute},{env,store:await tempStore(env),fetchImpl,useCache:false})
+  assert.equal(plan.route.model,'gpt-5.6-luna');assert.equal(plan.routingDecision.selection.target.source,'jev')
+  assert.equal(plan.routingDecision.selection.target.requested.accepted,false);assert.equal(plan.routingDecision.selection.target.requested.reason,'jev-authoritative')
+})
+
+test('an explicitly authorized host target may override Jev within capability floors',async()=>{
+  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer'),target:choice('openai:gpt-5.6-luna:high',.2),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
+  const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'}
+  const requestedRoute={provider:'openai',model:'gpt-5.6-terra',effort:'high'}
+  const plan=await planTask({task:'implement an explicitly targeted module',rootCause:'known',requestedRoute,requestedRouteAuthorized:true},{env,store:await tempStore(env),fetchImpl,useCache:false})
+  assert.equal(plan.route.model,'gpt-5.6-terra');assert.equal(plan.routingDecision.selection.target.source,'requested-route');assert.equal(plan.routingDecision.selection.target.requested.accepted,true)
+})
+
+test('overlapping host workstreams fail closed to a single worker',async()=>{
+  const workstreams=[{id:'a',task:'change a',files:['src/shared.js']},{id:'b',task:'change b',files:['src/shared.js']}]
+  const plan=await planTask({task:'implement bounded changes',workstreams},{useJev:false,env:{HARNESS_MAX_PARALLEL:'3'}})
+  assert.equal(plan.routingDecision.parallel.nonOverlapping,false);assert.equal(plan.routingDecision.parallel.effective,1);assert.equal(plan.routingDecision.parallel.conflicts[0].file,'src/shared.js')
+})
+
+test('provider readiness treats native plan models as ready and reports missing external keys',async()=>{
+  const result=await providerReadiness({}, {env:{XAI_API_KEY:'x'}})
+  assert.equal(result.statuses.openai.ready,true);assert.equal(result.statuses.openai.executionMode,'native_host')
+  assert.equal(result.statuses.xai.ready,true);assert.equal(result.statuses.deepseek.ready,false);assert.equal(result.statuses.kimi.ready,false)
+})
+
 test('untrusted model authorization never grants protected action',()=>{
   assert.equal(authorizeAction('deploy',{explicitlyAuthorized:true}).allowed,false)
   assert.equal(authorizeAction('deploy',{explicitlyAuthorized:true,authorizationSource:'trusted_host'}).allowed,true)
@@ -67,12 +106,12 @@ test('native OpenAI route returns a ChatGPT plan handoff without provider invoca
   let calls=0;clearProviders();registerProvider('openai',{execute:async()=>{calls++;throw new Error('must not dispatch')}})
   const env={},result=await executeRoutedTask({task:'implement one host change'},{useJev:false,env,store:await tempStore(env)})
   assert.equal(result.reason,'native-host-agent-required');assert.equal(result.execution,null);assert.equal(result.target.executionMode,'native_host')
-  assert.equal(result.handoff.billingSource,'chatgpt_plan');assert.equal(result.handoff.model,'gpt-5.6-terra');assert.equal(calls,0)
+  assert.equal(result.handoff.billingSource,'chatgpt_plan');assert.equal(result.handoff.model,'gpt-6-astra');assert.equal(result.handoff.scope,'subagent-only');assert.equal(result.handoff.parentModelUnchanged,true);assert.equal(calls,0)
 })
 
 test('host commander dispatches one explicitly selected external API worker',async()=>{
   const calls=[];clearProviders();registerProvider('xai',{execute:async query=>{calls.push([query.model,query.effort]);return normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{toolCalls:[report()]}})}})
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50'}
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'12000',HARNESS_MAX_OUTPUT_TOKENS:'50',XAI_API_KEY:'test-key'}
   const requestedRoute={provider:'xai',model:'grok-4.6',effort:'high'},result=await executeRoutedTask({task:'implement one external change',requestedRoute},{useJev:false,env,store:await tempStore(env)})
   assert.deepEqual(calls,[['grok-4.6','high']]);assert.equal(result.target.executionMode,'external_api');assert.equal(result.execution.executed,true);assert.equal(result.reason,undefined)
 })

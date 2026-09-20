@@ -20,7 +20,10 @@ const models = [
 
 const byKey = new Map(models.map(model => [`${model.provider}:${model.id}`, model]))
 const capabilityRank=new Map([['openai:gpt-5.6-luna',0],['openai:gpt-5.6-terra',1],['openai:gpt-5.6-sol',2],['openai:gpt-6-astra',3],['xai:grok-4.6',2],['deepseek:deepseek-flash',1],['deepseek:deepseek-v4-pro',2],['kimi:kimi-k3',2]])
-const roleRank={scout:0,engineer:1,deep_debugger:2,reviewer:2,exceptional:3}
+// Luna is valid for tightly bounded implementation work. Higher floors remain
+// mandatory for ambiguous/high-risk debugging, independent review, and
+// exceptional escalation.
+const roleRank={scout:0,engineer:0,deep_debugger:2,reviewer:2,exceptional:3}
 export const listModels = ({ provider } = {}) => models.filter(model => !provider || model.provider === provider).map(model => structuredClone(model))
 export function getModel(provider, model) { const value=byKey.get(`${provider}:${model}`); return value ? structuredClone(value) : null }
 export function validateModel({ provider, model, effort }) {

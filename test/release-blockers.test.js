@@ -37,7 +37,7 @@ test('service resumes request_context with the same task and attempt history',as
   const calls=[];clearProviders();registerProvider('xai',{execute:async query=>{calls.push(query);return calls.length===1
     ?normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:10,outputTokens:4},metadata:{responseId:'resp-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need direct caller'})}]}})
     :normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:7,outputTokens:3},metadata:{responseId:'resp-2',toolCalls:[report]}})}})
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100',HARNESS_MAX_DELEGATIONS:'2'},store=await tempStore(env)
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100',HARNESS_MAX_DELEGATIONS:'2',XAI_API_KEY:'test-key'},store=await tempStore(env)
   const first=await executeRoutedTask({task:'implement bounded fix',files:['src/a.js'],requestedRoute:externalRoute},{useJev:false,env,store})
   const resumed=await resumeRoutedTask({jobId:first.execution.job.id,approvedEvidence:{evidence:['src/a.js:12 calls helper with stale input'],files:['src/a.js']}},{env,store})
   const usage=await store.getUsage(first.execution.taskId)
@@ -50,7 +50,7 @@ test('service resumes request_context with the same task and attempt history',as
 
 test('continuation rejects unsafe evidence and provider bodies preserve bounded semantics',async()=>{
   clearProviders();registerProvider('xai',{execute:async query=>normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:1,outputTokens:1},metadata:{responseId:'r',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/a.js'],reason:'need it'})}]}})})
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true'},store=await tempStore(env),first=await executeRoutedTask({task:'bounded continuation',requestedRoute:externalRoute},{useJev:false,env,store})
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',XAI_API_KEY:'test-key'},store=await tempStore(env),first=await executeRoutedTask({task:'bounded continuation',requestedRoute:externalRoute},{useJev:false,env,store})
   const denied=await resumeRoutedTask({jobId:first.execution.job.id,approvedEvidence:{files:['../../.env']}},{env,store})
   assert.equal(denied.reason,'approved-evidence-unsafe-path')
   const responseBody=openAIResponseBody({model:'m',effort:'high',budget:{maxOutputTokens:20},previousResponseId:'resp',continuation:{request:{reason:'x'},approvedEvidence:{evidence:['ok']}}})
@@ -63,7 +63,7 @@ test('MCP request_context to approved evidence to complete report is resumable e
   const adapter={execute:async query=>{calls++;return calls===1
     ?normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:3,outputTokens:2},metadata:{responseId:'mcp-response-1',continuationRequired:true,toolCalls:[{name:'request_context',arguments:JSON.stringify({paths:['src/mcp.js'],reason:'need approved excerpt'})}]}})
     :normalizeResult({provider:'xai',model:query.model,role:query.role,usage:{inputTokens:2,outputTokens:2},metadata:{toolCalls:[report]}})}}
-  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100'},store=await tempStore(env),server=createServer({env,store,useJev:false,providers:{xai:adapter}})
+  const env={HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_MAX_INPUT_TOKENS:'1000',HARNESS_MAX_OUTPUT_TOKENS:'100',XAI_API_KEY:'test-key'},store=await tempStore(env),server=createServer({env,store,useJev:false,providers:{xai:adapter}})
   const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair(),pending=new Map();let nextId=1
   clientTransport.onmessage=message=>{if(message.id!=null&&pending.has(message.id)){const {resolve,reject}=pending.get(message.id);pending.delete(message.id);message.error?reject(new Error(JSON.stringify(message.error))):resolve(message.result)}}
   await server.connect(serverTransport);await clientTransport.start()

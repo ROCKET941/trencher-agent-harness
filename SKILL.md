@@ -11,11 +11,13 @@ Use for coding or research tasks that benefit from bounded routing. Astra, Sol, 
 1. Build a compact evidence packet; never bulk-read a repository.
 2. Apply deterministic policy and risk classification.
 3. Keep native host commander mode. API commander mode is disabled and fails closed.
-4. Send retrieval/mechanical work to `scout`, normal implementation to `engineer`, and ambiguous high-risk diagnosis to `deep_debugger`.
-5. If configured, ask Jev once for the batched plan; deterministic policy and the verified model registry remain authoritative.
-7. After one failed implementation require new evidence before another attempt.
-8. After two failed attempts stop and create an escalation packet.
-9. Use a fresh bounded reviewer for meaningful normal/high-risk changes.
+4. Call `provider_readiness` once at the start of a build session, not before every small step.
+5. Call `route_task` once per meaningful build phase. Reuse that plan until risk, scope, causal evidence, or provider readiness materially changes.
+6. Within the verified registry, a valid Jev worker/provider/model/effort choice is authoritative. Deterministic safety and capability floors may strengthen or reject it but never silently replace it for confidence alone.
+   Do not pass `requestedRoute` by habit. Set `requestedRouteAuthorized: true` only when the user's latest instruction explicitly chooses that provider/model; otherwise an available valid Jev target remains effective.
+7. A native handoff is subagent-only: keep the parent model unchanged. When the handoff requests parallel work, spawn up to its `maxAgents` native Codex subagents concurrently on independent, non-overlapping workstreams; the parent integrates and verifies.
+8. After one failed implementation require new causal evidence before another attempt. A third and final attempt requires explicit authorization in the latest owner message, new causal evidence, and `retryReason`; it cannot expand the fixed retry cap.
+9. Use `review_route` once after integrated implementation and tests when deterministic policy requires review or Jev recommends it. Do not route each review step separately.
 10. Inspect job/accounting status and return the compact result schema. Never report truncated output as complete.
 
 ## Context and retrieval budgets
@@ -26,4 +28,4 @@ Use for coding or research tasks that benefit from bounded routing. Astra, Sol, 
 Use `exact`, `adjacent` or exceptional `exploratory` retrieval as assigned. Delegations receive compact packets, not transcripts. Individual entries are size-capped and marked when truncated. Before provider execution, conservatively estimate the serialized request and block it when it exceeds `HARNESS_MAX_ESTIMATED_INPUT_TOKENS` (falling back to `HARNESS_MAX_INPUT_TOKENS`).
 
 ## Hard boundaries
-A model or Jev recommendation cannot authorize deployment, destructive Git operations, secret access, financial execution, wallet-permission changes, retry-budget expansion, path traversal, or OpenAI API execution. Unknown pricing, unsupported efforts, unavailable models, uncertain billing, and missing new causal evidence stop execution. A native OpenAI route returns a host handoff; it is never silently converted into an API call.
+A model or Jev recommendation cannot authorize deployment, destructive Git operations, secret access, financial execution, wallet-permission changes, retry-budget expansion, path traversal, or OpenAI API execution. Unknown pricing, unsupported efforts, unavailable models, uncertain billing, and missing new causal evidence stop execution. A native OpenAI route returns a plan-usage host subagent handoff; it is never silently converted into an API call or applied to the parent model.

@@ -17,7 +17,9 @@ export function buildEvidencePacket(input = {}) {
 export function checkContinue(input = {}) {
   return nextAttemptState({
     attempts: Array.isArray(input.attempts) ? input.attempts : [],
-    newEvidence: Boolean(input.newEvidence)
+    newEvidence: Boolean(input.newEvidence),
+    ownerAuthorizedRetry: Boolean(input.ownerAuthorizedRetry),
+    retryReason: input.retryReason
   })
 }
 

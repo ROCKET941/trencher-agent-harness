@@ -53,16 +53,16 @@ test('Jev unavailable uses deterministic context and retrieval fallback', async 
   assert.equal(plan.policy.retrievalMode, 'adjacent')
 })
 
-test('low-confidence advice does not broaden deterministic policy', async () => {
+test('low-confidence worker advice is accepted but cannot broaden context policy', async () => {
   const plan = await planTask({ task: 'fix named file', rootCause: 'known', files: ['src/a.js'] }, { env: {...jevEnv,JEV_MIN_CONFIDENCE:'.70'}, store:new AccountingStore(), fetchImpl: jevFetch({ worker: choice('deep_debugger', .2), context_profile: choice('expanded', .2), retrieval_mode: choice('exploratory', .2), expand_context: noul(1), review_required: noul(0) }) })
-  assert.equal(plan.route.role, 'engineer')
+  assert.equal(plan.route.role, 'deep_debugger')
   assert.equal(plan.policy.contextProfile, 'tight')
   assert.equal(plan.policy.retrievalMode, 'adjacent')
 })
 
-test('Jev cannot escalate an evidence-free normal task', async () => {
+test('valid Jev worker choice is authoritative for an ordinary task', async () => {
   const plan = await planTask({ task: 'implement panel' }, { env: jevEnv, store:new AccountingStore(), fetchImpl: jevFetch({ worker: choice('deep_debugger'), context_profile: choice('normal'), retrieval_mode: choice('adjacent'), expand_context: noul(0), review_required: noul(0) }) })
-  assert.equal(plan.route.role, 'engineer')
+  assert.equal(plan.route.role, 'deep_debugger')
 })
 
 test('tight profile also bounds shared fact and inspection pointers', () => {
@@ -92,11 +92,13 @@ test('expandContext false caps exploratory retrieval at adjacent', async () => {
 })
 
 test('high-risk policy cannot be weakened by Jev', async () => {
-  const plan = await planTask({ task: 'wallet settlement mismatch', risk: 'high' }, { env: jevEnv, store:new AccountingStore(), fetchImpl: jevFetch({ worker: choice('scout'), context_profile: choice('tight'), retrieval_mode: choice('exact'), expand_context: noul(0), review_required: noul(0) }) })
+  const plan = await planTask({ task: 'wallet settlement mismatch', risk: 'high' }, { env: jevEnv, store:new AccountingStore(), fetchImpl: jevFetch({ worker: choice('scout'), target:choice('openai:gpt-5.6-luna:low'), context_profile: choice('tight'), retrieval_mode: choice('exact'), expand_context: noul(0), review_required: noul(0) }) })
   assert.equal(plan.route.role, 'deep_debugger')
   assert.equal(plan.policy.contextProfile, 'expanded')
   assert.equal(plan.policy.retrievalMode, 'exploratory')
   assert.equal(plan.review.required, true)
+  assert.equal(plan.route.model,'gpt-6-astra')
+  assert.equal(plan.routingDecision.selection.target.jev.accepted,false)
 })
 
 test('review and expandContext advice remain available', async () => {

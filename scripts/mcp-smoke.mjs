@@ -13,6 +13,7 @@ const expectedTools = [
   'execute_routed_task',
   'job_status',
   'model_catalog',
+  'provider_readiness',
   'provider_status',
   'resume_routed_task',
   'review_route',
