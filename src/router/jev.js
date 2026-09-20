@@ -3,6 +3,7 @@ import { listModels, REGISTRY_VERSION } from '../providers/catalog.js'
 import routing from '../../config/routing.json' with {type:'json'}
 import { getAccountingStore } from '../execution/executor.js'
 import { taskIdentityFromContext, digestValue } from '../execution/taskIdentity.js'
+import { reconcileJevUsage } from '../execution/jevAccounting.js'
 const BASE = 'https://api.typesafe.ai', RETRYABLE = new Set([429, 529]), cache=new Map(), MAX_RETRY_DELAY_MS=2000
 const CONTEXT_PROFILES = new Set(['tight', 'normal', 'expanded'])
 const RETRIEVAL_MODES = new Set(['exact', 'adjacent', 'exploratory'])
@@ -32,6 +33,7 @@ export async function askJev({ state, questions }, options = {}) {
   const reservation=await ledger.reserve({taskId,provider:'typesafe',model:env.TYPESAFE_MODEL||'jev-latest',effort:null,reservedCostUsd:availability.callCostUsd,deadlineAt,evidenceHash:digestValue({state,questions}),attemptClass:'auxiliary'})
   if(!reservation.allowed)return{available:false,reason:`jev-accounting-${reservation.reason}`,taskId,reservation}
   const fetchImpl = options.fetchImpl || globalThis.fetch, timeout = number(env.TYPESAFE_TIMEOUT_MS, 5000), maxRetries = options.maxRetries ?? 2
+  let priorUncertainBilling = false
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeout)
     try {
@@ -42,11 +44,11 @@ export async function askJev({ state, questions }, options = {}) {
       if (!response.ok) {const job=await ledger.finalize(reservation.job.id,{status:'failed',actualCostUsd:availability.callCostUsd,error:`jev-http-${response.status}`});return { available: false, reason: `jev-http-${response.status}`, retries: attempt,job,taskId }}
       let raw
       try{raw=await response.json()}catch{const job=await ledger.finalize(reservation.job.id,{status:'failed',actualCostUsd:availability.callCostUsd,error:'jev-invalid-response'});return{available:false,reason:'jev-invalid-response',retries:attempt,job,taskId}}
-      const usage={inputTokens:Number(raw.usage?.input_tokens||raw.usage?.inputTokens||0),outputTokens:Number(raw.usage?.output_tokens||raw.usage?.outputTokens||0)}
-      const job=await ledger.finalize(reservation.job.id,{status:'completed',usage,actualCostUsd:availability.callCostUsd})
+      const accounting=reconcileJevUsage(raw.usage,availability.callCostUsd,{priorUncertainBilling,inputUsdPerMillion:env.HARNESS_JEV_INPUT_USD_PER_MILLION})
+      const job=await ledger.finalize(reservation.job.id,{status:'completed',...accounting})
       return { available: true, reason: 'jev', model: raw.model, answers: raw.answers || {}, usage: raw.usage || {}, retries: attempt,job,taskId }
     } catch (error) {
-      if (attempt < maxRetries && (error?.name === 'AbortError' || error instanceof TypeError)) { clearTimeout(timer); await sleep(250 * (2 ** attempt)); continue }
+      if (attempt < maxRetries && (error?.name === 'AbortError' || error instanceof TypeError)) { priorUncertainBilling = true; clearTimeout(timer); await sleep(250 * (2 ** attempt)); continue }
       const reason=error?.name === 'AbortError' ? 'jev-timeout' : 'jev-network-error',job=await ledger.finalize(reservation.job.id,{status:'failed',error:reason,uncertainBilling:true})
       return { available: false, reason, retries: attempt,job,taskId }
     } finally { clearTimeout(timer) }
@@ -56,8 +58,8 @@ export async function askJev({ state, questions }, options = {}) {
 export async function askRoutingJev(packet, options = {}) {
   const availability=jevAvailability(options.env||process.env)
   if(!availability.available)return availability
-  const eligibleModels=options.eligibleModels||listModels(),eligible=eligibleModels.flatMap(model=>model.efforts.map(effort=>`${model.provider}:${model.id}:${effort}`)),targetExecutionModes=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.executionMode]))
-  const state={task:packet.task,risk:packet.risk,root_cause_known:Boolean(packet.rootCause),evidence:packet.evidence,files:packet.files,open_questions:packet.openQuestions,facts:packet.facts,inspected:packet.inspected,eligible_targets:eligible,target_execution_modes:targetExecutionModes,registry_version:REGISTRY_VERSION,policy_version:routing.version}
+  const eligibleModels=options.eligibleModels||listModels(),eligible=eligibleModels.map(model=>`${model.provider}:${model.id}`),targetExecutionModes=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.executionMode])),targetEfforts=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.efforts]))
+  const state={task:packet.task,risk:packet.risk,root_cause_known:Boolean(packet.rootCause),evidence:packet.evidence,files:packet.files,open_questions:packet.openQuestions,facts:packet.facts,inspected:packet.inspected,eligible_targets:eligible,target_efforts:targetEfforts,target_execution_modes:targetExecutionModes,registry_version:REGISTRY_VERSION,policy_version:routing.version}
   const cacheKey=createHash('sha256').update(JSON.stringify(state)).digest('hex')
   if(options.useCache!==false&&cache.has(cacheKey))return{...structuredClone(cache.get(cacheKey)),cacheHit:true}
   const result = await askJev({ state, questions: {
@@ -65,7 +67,8 @@ export async function askRoutingJev(packet, options = {}) {
     complexity: {type:'choice',instructions:'Estimate size separately from risk.',criteria:{low:'Localized and mechanical.',medium:'Several related surfaces.',high:'Cross-cutting architecture or ambiguity.'}},
     risk: {type:'choice',instructions:'Assess consequence and trust boundaries separately from task size. Exact caller search is not high risk merely because a symbol contains a safety word.',criteria:{low:'Read-only or trivial.',normal:'Ordinary bounded engineering.',high:'Funds, auth, secrets, concurrency, production, or irreversible behavior.'}},
     worker: { type: 'choice', instructions: 'Choose the cheapest capable worker. Never downgrade high-risk unknown-root-cause work.', criteria: { scout: 'Repository search and reconnaissance only.', engineer: 'Bounded implementation with an established causal path.', deep_debugger: 'Ambiguous high-risk root cause, financial correctness, concurrency, distributed state or execution.' } },
-    target: {type:'choice',instructions:'Choose exactly one target from eligible_targets in state. OpenAI targets are native host agents using ChatGPT plan usage; xAI, DeepSeek, and Kimi targets are external API delegates. Never invent or substitute a model or effort.',criteria:Object.fromEntries(eligible.map(value=>[value,value]))},
+    target: {type:'choice',instructions:'Choose exactly one provider:model from eligible_targets in state, separately from effort. Prefer the cheapest capable model. OpenAI targets are native host agents using ChatGPT plan usage; xAI, DeepSeek, and Kimi targets are external API delegates. Never invent a model.',criteria:Object.fromEntries(eligible.map(value=>[value,value]))},
+    effort: {type:'choice',instructions:'Choose the smallest sufficient reasoning effort supported by the selected target in target_efforts. Assess confidence in effort separately from provider/model.',criteria:Object.fromEntries([...new Set(eligibleModels.flatMap(model=>model.efforts))].map(value=>[value,value]))},
     context_profile: { type: 'choice', instructions: 'Choose the smallest sufficient bounded context. Expanded requires concrete missing evidence, ambiguity, or high risk.', criteria: { tight: 'Localized work with strong symbol, file, or exact-search evidence.', normal: 'Ordinary bounded engineering using direct dependencies.', expanded: 'Current evidence is insufficient for genuinely ambiguous or high-risk work.' } },
     retrieval_mode: { type: 'choice', instructions: 'Choose the narrowest sufficient repository retrieval scope. Exploratory is exceptional.', criteria: { exact: 'Known symbols, exact hits, named files, and relevant excerpts only.', adjacent: 'Direct callers, callees, imports, and dependencies around known evidence.', exploratory: 'Broader investigation because root cause or context is genuinely unknown.' } },
     expand_context: { type: 'noul', instructions: 'Is more repository context required?', criteria: { true: 'More evidence is necessary.', false: 'Current evidence is sufficient.' } },
@@ -75,7 +78,7 @@ export async function askRoutingJev(packet, options = {}) {
     review_required: { type: 'noul', instructions: 'Should this change receive an independent bounded review?', criteria: { true: 'Meaningful normal/high-risk change.', false: 'Trivial low-risk work.' } }
   } }, {...options,taskContext:{task:packet.task,rootCause:packet.rootCause}})
   if(!result.available)return result
-  const normalized={...result,cacheKey,cacheHit:false,taskType:normalizeChoice(result.answers.task_type),complexity:normalizeChoice(result.answers.complexity),riskAdvice:normalizeChoice(result.answers.risk),worker:normalizeChoice(result.answers.worker),target:normalizeChoice(result.answers.target),contextProfile:normalizeContextProfile(result.answers.context_profile),retrievalMode:normalizeRetrievalMode(result.answers.retrieval_mode),expandContext:normalizeNoul(result.answers.expand_context),parallelRequired:normalizeNoul(result.answers.parallel_required),parallelJustification:normalizeChoice(result.answers.parallel_justification),verification:normalizeChoice(result.answers.verification),reviewRequired:normalizeNoul(result.answers.review_required)}
+  const normalized={...result,cacheKey,cacheHit:false,taskType:normalizeChoice(result.answers.task_type),complexity:normalizeChoice(result.answers.complexity),riskAdvice:normalizeChoice(result.answers.risk),worker:normalizeChoice(result.answers.worker),target:normalizeChoice(result.answers.target),effort:normalizeChoice(result.answers.effort),contextProfile:normalizeContextProfile(result.answers.context_profile),retrievalMode:normalizeRetrievalMode(result.answers.retrieval_mode),expandContext:normalizeNoul(result.answers.expand_context),parallelRequired:normalizeNoul(result.answers.parallel_required),parallelJustification:normalizeChoice(result.answers.parallel_justification),verification:normalizeChoice(result.answers.verification),reviewRequired:normalizeNoul(result.answers.review_required)}
   if(options.useCache!==false)cache.set(cacheKey,structuredClone(normalized))
   return normalized
 }

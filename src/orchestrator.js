@@ -7,12 +7,16 @@ import { createDelegation } from './providers/registry.js'
 import { resolveRoleTarget } from './execution/roleResolver.js'
 import { validateModel, eligibleForRole } from './providers/catalog.js'
 import { executionModeForProvider } from './policy/providerExecution.js'
+import { withDecisionTrace } from './router/decisionTrace.js'
+import path from 'node:path'
 
 const rank = { scout: 0, engineer: 1, deep_debugger: 2, reviewer: 2, exceptional: 3 }
 const workerRoles = new Set(['scout', 'engineer', 'deep_debugger', 'exceptional'])
 const profileRank = { tight: 0, normal: 1, expanded: 2 }
 const retrievalRank = { exact: 0, adjacent: 1, exploratory: 2 }
 const number = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback
+const threshold = (value, minimum) => Math.min(1, Math.max(minimum, number(value, minimum)))
+const confident = (value, minimum) => typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= 1
 
 function deterministicContext(packet, route) {
   const unknownHighRisk = packet.risk === 'high' && !packet.rootCause
@@ -52,42 +56,53 @@ function mandatoryRole(input, packet) {
   return null
 }
 
-function decodeTarget(choice) {
+function decodeTarget(choice, effortChoice) {
   if (typeof choice !== 'string') return null
   const [provider, ...rest] = choice.split(':')
-  const effort = rest.pop()
+  const effort = rest.length === 1 ? effortChoice : rest.pop()
   const model = rest.join(':')
   return provider && model && effort ? { provider, model, effort } : null
 }
 
-function chooseWorker(fallback, mandatory, advice) {
+function chooseWorker(fallback, mandatory, advice, env) {
+  const minimum = threshold(env.JEV_MIN_CONFIDENCE, 0.70)
   const jevChoice = advice?.available ? advice.worker?.choice : null
   const valid = workerRoles.has(jevChoice)
   const floorMet = !mandatory || (valid && rank[jevChoice] >= rank[mandatory])
-  const accepted = Boolean(valid && floorMet)
+  const accepted = Boolean(valid && floorMet && confident(advice?.worker?.confidence, minimum))
   return {
     route: accepted ? { role: jevChoice, action: 'delegate', reason: 'jev' } : fallback,
     trace: {
       source: accepted ? 'jev' : 'deterministic-fallback',
       fallback: fallback.role,
       mandatoryFloor: mandatory,
-      jev: { choice: jevChoice, confidence: advice?.worker?.confidence ?? null, accepted, reason: accepted ? 'validated-jev-choice' : (valid ? 'deterministic-role-floor' : 'missing-or-invalid-choice') }
+      jev: { choice: jevChoice, confidence: advice?.worker?.confidence ?? null, threshold: minimum, accepted, reason: accepted ? 'validated-jev-choice' : (!valid ? 'missing-or-invalid-choice' : (!floorMet ? 'deterministic-role-floor' : 'insufficient-confidence')) }
     }
   }
 }
 
 function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, mandatory, overrides) {
-  const fallbackTarget = resolveRoleTarget(route.role, env)
+  const configuredTarget = resolveRoleTarget(route.role, env)
+  const configuredValidation = validateModel(configuredTarget)
+  const configuredAllowed = configuredValidation.allowed && eligibleForRole(route.role, configuredValidation.entry)
+  const fallbackTarget = configuredAllowed ? configuredTarget : resolveRoleTarget(route.role, {})
   const fallback = { role: route.role, ...fallbackTarget }
-  const decoded = decodeTarget(advice?.available ? advice.target?.choice : null)
+  if (!configuredAllowed) overrides.push({ field: 'configuredTarget', requested: configuredTarget, applied: fallback, reason: configuredValidation.reason || 'deterministic-capability-floor' })
+  const minimum = threshold(env.JEV_MIN_CONFIDENCE, 0.70)
+  const decoded = decodeTarget(advice?.available ? advice.target?.choice : null, advice?.effort?.choice)
   const validation = decoded ? validateModel(decoded) : { allowed: false, reason: 'missing-or-invalid-choice' }
-  const jevAccepted = Boolean(decoded && validation.allowed && eligibleForRole(route.role, validation.entry))
+  const legacyTarget = typeof advice?.target?.choice === 'string' && advice.target.choice.split(':').length > 2
+  const effortConfidence = legacyTarget ? advice?.target?.confidence : advice?.effort?.confidence
+  const capabilityMet = validation.allowed && eligibleForRole(route.role, validation.entry)
+  const confidenceMet = confident(advice?.target?.confidence, minimum) && confident(effortConfidence, minimum)
+  const jevAccepted = Boolean(decoded && capabilityMet && confidenceMet)
+  const rejectionReason = validation.reason || (!capabilityMet ? 'deterministic-capability-floor' : 'insufficient-confidence')
   const jevTarget = jevAccepted ? { role: route.role, ...decoded } : null
   let effective = jevTarget || fallback
   let source = jevAccepted ? 'jev' : 'deterministic-fallback'
 
   if (advice?.available && advice.target && !jevAccepted) {
-    overrides.push({ field: 'jevTarget', requested: decoded || advice.target.choice, applied: fallback, reason: validation.reason || 'deterministic-capability-floor' })
+    overrides.push({ field: 'jevTarget', requested: decoded || advice.target.choice, applied: fallback, reason: rejectionReason })
   }
 
   let requestedTrace = null
@@ -122,7 +137,7 @@ function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, m
     trace: {
       source,
       fallback: execution(fallback),
-      jev: { choice: advice?.target?.choice ?? null, confidence: advice?.target?.confidence ?? null, accepted: jevAccepted, reason: jevAccepted ? 'validated-jev-target' : (validation.reason || 'deterministic-capability-floor') },
+      jev: { choice: advice?.target?.choice ?? null, confidence: advice?.target?.confidence ?? null, effort: decoded?.effort ?? null, effortConfidence: effortConfidence ?? null, threshold: minimum, accepted: jevAccepted, reason: jevAccepted ? 'validated-jev-target' : rejectionReason },
       requested: requested ? { value: requested, ...requestedTrace } : null
     }
   }
@@ -130,6 +145,12 @@ function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, m
 
 function normalizeWorkstreams(input) {
   const values = Array.isArray(input.workstreams) ? input.workstreams.slice(0, 3) : []
+  const issues = []
+  if (Array.isArray(input.workstreams) && input.workstreams.length > 3) issues.push({ reason: 'too-many-workstreams' })
+  for (const value of values) {
+    if (!value || typeof value.task !== 'string' || !value.task.trim() || ['files', 'tests', 'dependsOn'].some(key => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string' || !item.trim())))) issues.push({ reason: 'invalid-workstream' })
+    if (value?.files?.length > 12 || value?.tests?.length > 8 || value?.dependsOn?.length > 3) issues.push({ reason: 'truncated-workstream-ownership' })
+  }
   const workstreams = values.map((value, index) => ({
     id: String(value?.id || `workstream-${index + 1}`).slice(0, 80),
     task: String(value?.task || '').slice(0, 1000),
@@ -137,20 +158,28 @@ function normalizeWorkstreams(input) {
     tests: [...new Set((Array.isArray(value?.tests) ? value.tests : []).map(String).filter(Boolean))].slice(0, 8),
     dependsOn: [...new Set((Array.isArray(value?.dependsOn) ? value.dependsOn : []).map(String).filter(Boolean))].slice(0, 3)
   })).filter(value => value.task)
-  const owners = new Map(), conflicts = []
+  const owners = new Map(), conflicts = [], ids = new Set()
   for (const workstream of workstreams) {
-    for (const file of workstream.files) {
-      if (owners.has(file)) conflicts.push({ file, workstreams: [owners.get(file), workstream.id] })
-      else owners.set(file, workstream.id)
+    if (ids.has(workstream.id)) issues.push({ workstream: workstream.id, reason: 'duplicate-workstream-id' })
+    ids.add(workstream.id)
+    if (!workstream.files.length && !workstream.tests.length) issues.push({ workstream: workstream.id, reason: 'missing-file-ownership' })
+    if (workstream.dependsOn.length) issues.push({ workstream: workstream.id, reason: 'dependent-workstream' })
+    for (const file of [...workstream.files, ...workstream.tests]) {
+      const canonical = path.posix.normalize(file.replaceAll('\\', '/')).toLowerCase()
+      if (/[*?\[\]{}]/.test(canonical) || canonical === '.' || canonical === '..' || canonical.startsWith('../') || path.posix.isAbsolute(canonical) || /^[a-z]:/.test(canonical)) issues.push({ workstream: workstream.id, file, reason: 'ambiguous-file-ownership' })
+      for (const [owned, owner] of owners) {
+        if (owner !== workstream.id && (canonical === owned || canonical.startsWith(`${owned}/`) || owned.startsWith(`${canonical}/`))) conflicts.push({ file, workstreams: [owner, workstream.id] })
+      }
+      owners.set(canonical, workstream.id)
     }
   }
-  return { workstreams, conflicts, nonOverlapping: conflicts.length === 0 }
+  return { workstreams, conflicts, issues, nonOverlapping: conflicts.length === 0 && issues.length === 0 }
 }
 
 function parallelPlan(input, advice, env) {
-  const threshold = number(env.JEV_PARALLEL_THRESHOLD, 0.50)
+  const minimum = threshold(env.JEV_PARALLEL_THRESHOLD, 0.80)
   const normalized = normalizeWorkstreams(input)
-  const jevParallel = advice?.available && advice.parallelRequired?.probability >= threshold && ['independent', 'critical_path'].includes(advice?.parallelJustification?.choice)
+  const jevParallel = advice?.available && confident(advice.parallelRequired?.probability, minimum) && confident(advice.parallelJustification?.confidence, threshold(env.JEV_MIN_CONFIDENCE, 0.70)) && ['independent', 'critical_path'].includes(advice?.parallelJustification?.choice)
   const suppliedParallel = normalized.workstreams.length > 1 && normalized.nonOverlapping
   const recommended = suppliedParallel ? normalized.workstreams.length : (jevParallel ? 3 : 1)
   const configured = Math.min(3, Math.max(1, Math.trunc(number(env.HARNESS_MAX_PARALLEL, 3))))
@@ -161,10 +190,11 @@ function parallelPlan(input, advice, env) {
     configured,
     decisionSource: suppliedParallel ? 'validated-workstreams' : (jevParallel ? 'jev' : 'deterministic-single'),
     probability: advice?.parallelRequired?.probability ?? null,
-    threshold,
+    threshold: minimum,
     justification: suppliedParallel ? 'independent' : (advice?.parallelJustification?.choice || 'none'),
     workstreams: normalized.workstreams,
     conflicts: normalized.conflicts,
+    issues: normalized.issues,
     nonOverlapping: normalized.nonOverlapping
   }
 }
@@ -180,13 +210,13 @@ export async function planTask(input, options = {}) {
     ownerAuthorizedRetry: Boolean(input.ownerAuthorizedRetry),
     retryReason: input.retryReason
   })
-  if (!attempt.allowed) return { packet: initialPacket, route: { action: attempt.action, reason: attempt.reason }, delegation: null, advice: null }
+  if (!attempt.allowed) return withDecisionTrace({ packet: initialPacket, route: { action: attempt.action, reason: attempt.reason }, delegation: null, advice: null })
 
   const fallback = deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length })
   let advice = null
   if (options.useJev !== false) advice = await askRoutingJev(initialPacket, options)
   const mandatory = mandatoryRole(input, initialPacket)
-  const worker = chooseWorker(fallback, mandatory, advice)
+  const worker = chooseWorker(fallback, mandatory, advice, env)
   const route = worker.route
   const contextPolicy = applyAdvice(initialPacket, deterministicContext(initialPacket, route), advice, env)
   const packet = createEvidencePacket({ ...input, risk }, { contextProfile: contextPolicy.contextProfile })
@@ -237,7 +267,7 @@ export async function planTask(input, options = {}) {
       instruction: 'Reuse this route for the current meaningful build phase. Route again only when risk, scope, causal evidence, or provider readiness materially changes.'
     }
   }
-  return {
+  return withDecisionTrace({
     packet,
     route: { ...route, ...target.effective, requested, routingDecision },
     delegation: target.effective.role ? createDelegation(target.effective.role, packet, policy) : null,
@@ -246,5 +276,5 @@ export async function planTask(input, options = {}) {
     review,
     routingDecision,
     commander: { mode: 'host', apiCommander: false }
-  }
+  })
 }

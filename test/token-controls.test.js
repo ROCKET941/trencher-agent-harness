@@ -53,9 +53,10 @@ test('Jev unavailable uses deterministic context and retrieval fallback', async 
   assert.equal(plan.policy.retrievalMode, 'adjacent')
 })
 
-test('low-confidence worker advice is accepted but cannot broaden context policy', async () => {
+test('low-confidence worker advice cannot escalate the worker or broaden context policy', async () => {
   const plan = await planTask({ task: 'fix named file', rootCause: 'known', files: ['src/a.js'] }, { env: {...jevEnv,JEV_MIN_CONFIDENCE:'.70'}, store:new AccountingStore(), fetchImpl: jevFetch({ worker: choice('deep_debugger', .2), context_profile: choice('expanded', .2), retrieval_mode: choice('exploratory', .2), expand_context: noul(1), review_required: noul(0) }) })
-  assert.equal(plan.route.role, 'deep_debugger')
+  assert.equal(plan.route.role, 'engineer')
+  assert.equal(plan.routingDecision.selection.worker.jev.reason, 'insufficient-confidence')
   assert.equal(plan.policy.contextProfile, 'tight')
   assert.equal(plan.policy.retrievalMode, 'adjacent')
 })
@@ -97,7 +98,7 @@ test('high-risk policy cannot be weakened by Jev', async () => {
   assert.equal(plan.policy.contextProfile, 'expanded')
   assert.equal(plan.policy.retrievalMode, 'exploratory')
   assert.equal(plan.review.required, true)
-  assert.equal(plan.route.model,'gpt-6-astra')
+  assert.equal(plan.route.model,'gpt-5.6-sol')
   assert.equal(plan.routingDecision.selection.target.jev.accepted,false)
 })
 

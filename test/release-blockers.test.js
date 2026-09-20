@@ -25,12 +25,13 @@ test('Jev advice fails closed before dispatch without both owner gate and conser
   assert.equal(gated.reason,'jev-paid-execution-owner-gate-disabled');assert.equal(unpriced.reason,'jev-call-cost-bound-missing-or-invalid');assert.equal(calls,0)
 })
 
-test('one Jev reservation covers retry and charges the operator bound to the derived task',async()=>{
+test('one Jev reservation covers retry and reconciles input usage to the derived task',async()=>{
   let calls=0;const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.07'},store=await tempStore(env)
   const fetchImpl=async()=>{calls++;if(calls===1)return{ok:false,status:429,headers:{get:()=>0}};return{ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev',answers:{},usage:{input_tokens:2,output_tokens:1}})}}
   const result=await askRoutingJev({task:'same identity',risk:'normal',rootCause:'known',evidence:[]},{env,store,fetchImpl,workspace:'repo',maxRetries:1})
   const usage=await store.getUsage(result.taskId)
-  assert.equal(result.available,true);assert.equal(result.taskId,taskIdentityFromContext({task:'same identity',rootCause:'known'},'repo'));assert.equal(calls,2);assert.equal(usage.task.auxiliaryStarts,1);assert.equal(usage.task.actualCostUsd,.07);assert.equal(usage.daily.actualCostUsd,.07)
+  assert.equal(result.available,true);assert.equal(result.taskId,taskIdentityFromContext({task:'same identity',rootCause:'known'},'repo'));assert.equal(calls,2);assert.equal(usage.task.auxiliaryStarts,1);assert.equal(usage.task.actualCostUsd,2*.042/1_000_000);assert.equal(usage.daily.actualCostUsd,2*.042/1_000_000)
+  assert.equal(result.job.reservedCostUsd,.07);assert.equal(result.job.costBasis,'reported-input-usage');assert.equal(usage.task.reservedCostUsd,0)
 })
 
 test('service resumes request_context with the same task and attempt history',async()=>{

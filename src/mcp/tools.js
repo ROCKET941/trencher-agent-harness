@@ -4,6 +4,7 @@ import { createTaskLedger } from '../context/taskLedger.js'
 import { nextAttemptState } from '../policy/antiLoop.js'
 import { authorizeAction } from '../policy/safety.js'
 import { createDelegation } from '../providers/registry.js'
+import { withDecisionTrace } from '../router/decisionTrace.js'
 
 export async function routeTask(input, options = {}) {
   return planTask(input, options)
@@ -45,9 +46,9 @@ export async function reviewRoute(input = {}, options = {}) {
     rootCause: input.rootCause || 'implementation-complete'
   }, { ...options, useJev: false })
 
-  return {
+  return withDecisionTrace({
     ...plan,
     route: { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' },
     delegation: createDelegation('reviewer', plan.packet)
-  }
+  })
 }

@@ -1,5 +1,5 @@
 {
-  "name":"trencher-agent-harness","version":"1.1.0","private":true,"type":"module",
+  "name":"trencher-agent-harness","version":"1.1.1","private":true,"type":"module",
   "description":"Frontier-model routing, Jev control, provider execution, and remote MCP harness",
   "scripts":{"test":"node --test","smoke":"node scripts/smoke.mjs","mcp":"node src/mcp/server.js","mcp:http":"node src/mcp/http-server.js","mcp:smoke":"node scripts/mcp-smoke.mjs","mcp:http:smoke":"node scripts/http-smoke.mjs","jev:smoke":"node scripts/jev-live-smoke.mjs","provider:smoke":"node scripts/provider-smoke.mjs","benchmark":"node scripts/benchmark.mjs","benchmark:live":"node scripts/benchmark.mjs --live"},
   "engines":{"node":">=22"},

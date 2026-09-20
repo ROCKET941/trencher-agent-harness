@@ -50,10 +50,11 @@ export class AccountingStore {
     if(Number(parent.continuationIndex||0)>=Number(input.maxContinuationIndex||0))return{allowed:false,reason:'delegation-budget'}
     const result=this.#reserveState(state,{...input,attemptClass:'auxiliary',taskId:parent.taskId},limits,now,day,parent);if(result.allowed&&!result.deduplicated)await this.#save(state);return result
   })}
-  finalize(jobId,{status='completed',usage=null,actualCostUsd=null,error=null,uncertainBilling=false,completionReason=null,continuation=null}={}){return this.#locked(async()=>{
+  finalize(jobId,{status='completed',usage=null,actualCostUsd=null,error=null,uncertainBilling=false,completionReason=null,continuation=null,costBasis=null}={}){return this.#locked(async()=>{
     const state=await this.#load(),job=state.jobs[jobId];if(!job)return null;if(job.status!=='running')return structuredClone(job)
     const day=job.createdAt.slice(0,10),task=state.tasks[job.taskId],daily=state.days[day];task.reservedCostUsd=Math.max(0,task.reservedCostUsd-job.reservedCostUsd);daily.reservedCostUsd=Math.max(0,daily.reservedCostUsd-job.reservedCostUsd)
     job.status=uncertainBilling?'uncertain':status;job.finishedAt=new Date(this.now()).toISOString();job.usage=usage;job.actualCostUsd=uncertainBilling?job.reservedCostUsd:(Number.isFinite(actualCostUsd)?actualCostUsd:null);job.error=error;job.completionReason=completionReason;job.continuation=continuation
+    if(costBasis)job.costBasis=costBasis
     if(uncertainBilling){task.uncertainBilling=true;task.actualCostUsd+=job.reservedCostUsd;daily.actualCostUsd+=job.reservedCostUsd}
     else{if(Number.isFinite(actualCostUsd)){task.actualCostUsd+=actualCostUsd;daily.actualCostUsd+=actualCostUsd}if(usage){task.inputTokens=Number(task.inputTokens||0)+Number(usage.inputTokens||0);task.outputTokens=Number(task.outputTokens||0)+Number(usage.outputTokens||0)}}
     state.jobs[jobId]=job;await this.#save(state);return structuredClone(job)

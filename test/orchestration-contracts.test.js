@@ -33,6 +33,7 @@ test('Jev uses one batched planning request and caches on policy/registry/contex
   const packet=createEvidencePacket({task:'unique batched plan 98127',files:['a.js']})
   const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},store=await tempStore(env),first=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'}),second=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'})
   assert.equal(calls,1);assert.equal(second.cacheHit,true);assert.ok(sent.questions.task_type);assert.ok(sent.questions.parallel_justification);assert.ok(sent.questions.verification);assert.ok(sent.state.registry_version)
+  assert.ok(sent.questions.effort);assert.equal(Object.keys(sent.questions.target.criteria).length,8);assert.ok(sent.state.target_efforts['openai:gpt-5.6-luna'].includes('high'))
   assert.equal(sent.state.target_execution_modes['openai:gpt-5.6-terra'],'native_host');assert.equal(sent.state.target_execution_modes['xai:grok-4.6'],'external_api')
   assert.equal(first.target.choice,'openai:gpt-5.6-terra:high')
 })
@@ -42,18 +43,18 @@ test('route exposes requested recommended effective and deterministic overrides'
   assert.equal(plan.routingDecision.requested.role,'scout');assert.equal(plan.routingDecision.effective.role,'deep_debugger');assert.ok(plan.routingDecision.overrides.length>0)
 })
 
-test('validated low-confidence Jev target remains authoritative and enables parallel native subagents',async()=>{
+test('low-confidence Jev target falls back cheaply while strong independent parallel advice remains influential',async()=>{
   const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer',.31),target:choice('openai:gpt-5.6-luna:high',.28),context_profile:choice('tight',.9),retrieval_mode:choice('adjacent',.9),expand_context:noul(0),parallel_required:noul(.86),parallel_justification:choice('independent'),review_required:noul(0)},usage:{}})})
   const env={...{TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},JEV_MIN_CONFIDENCE:'.70',HARNESS_MAX_PARALLEL:'3'}
   const plan=await planTask({task:'implement three disjoint bounded components',files:['src/a.js','src/b.js','src/c.js']},{env,store:await tempStore(env),fetchImpl})
-  assert.equal(plan.route.model,'gpt-5.6-luna');assert.equal(plan.route.effort,'high');assert.equal(plan.routingDecision.selection.target.source,'jev')
-  assert.equal(plan.routingDecision.selection.target.jev.confidence,.28);assert.equal(plan.routingDecision.selection.target.jev.accepted,true)
+  assert.equal(plan.route.model,'gpt-5.6-luna');assert.equal(plan.route.effort,'medium');assert.equal(plan.routingDecision.selection.target.source,'deterministic-fallback')
+  assert.equal(plan.routingDecision.selection.target.jev.confidence,.28);assert.equal(plan.routingDecision.selection.target.jev.accepted,false);assert.equal(plan.routingDecision.selection.target.jev.reason,'insufficient-confidence')
   assert.equal(plan.routingDecision.parallel.effective,3);assert.equal(plan.routingDecision.handoff.scope,'subagent-only');assert.equal(plan.routingDecision.handoff.parentModelUnchanged,true)
   assert.equal(plan.routingDecision.handoff.orchestration.strategy,'parallel-non-overlapping');assert.equal(plan.routingDecision.planReuse.routeOncePerPhase,true)
 })
 
 test('an unapproved host model override cannot replace an available valid Jev target',async()=>{
-  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer',.3),target:choice('openai:gpt-5.6-luna:high',.2),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
+  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer',.9),target:choice('openai:gpt-5.6-luna:high',.9),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
   const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'}
   const requestedRoute={provider:'openai',model:'gpt-5.6-terra',effort:'high'}
   const plan=await planTask({task:'implement one bounded module',rootCause:'known',requestedRoute},{env,store:await tempStore(env),fetchImpl,useCache:false})
@@ -62,7 +63,7 @@ test('an unapproved host model override cannot replace an available valid Jev ta
 })
 
 test('an explicitly authorized host target may override Jev within capability floors',async()=>{
-  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer'),target:choice('openai:gpt-5.6-luna:high',.2),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
+  const fetchImpl=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev-test',answers:{worker:choice('engineer'),target:choice('openai:gpt-5.6-luna:high',.9),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),review_required:noul(0)},usage:{}})})
   const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'}
   const requestedRoute={provider:'openai',model:'gpt-5.6-terra',effort:'high'}
   const plan=await planTask({task:'implement an explicitly targeted module',rootCause:'known',requestedRoute,requestedRouteAuthorized:true},{env,store:await tempStore(env),fetchImpl,useCache:false})
@@ -106,7 +107,7 @@ test('native OpenAI route returns a ChatGPT plan handoff without provider invoca
   let calls=0;clearProviders();registerProvider('openai',{execute:async()=>{calls++;throw new Error('must not dispatch')}})
   const env={},result=await executeRoutedTask({task:'implement one host change'},{useJev:false,env,store:await tempStore(env)})
   assert.equal(result.reason,'native-host-agent-required');assert.equal(result.execution,null);assert.equal(result.target.executionMode,'native_host')
-  assert.equal(result.handoff.billingSource,'chatgpt_plan');assert.equal(result.handoff.model,'gpt-6-astra');assert.equal(result.handoff.scope,'subagent-only');assert.equal(result.handoff.parentModelUnchanged,true);assert.equal(calls,0)
+  assert.equal(result.handoff.billingSource,'chatgpt_plan');assert.equal(result.handoff.model,'gpt-5.6-luna');assert.equal(result.handoff.scope,'subagent-only');assert.equal(result.handoff.parentModelUnchanged,true);assert.equal(calls,0)
 })
 
 test('host commander dispatches one explicitly selected external API worker',async()=>{
