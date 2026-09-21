@@ -137,8 +137,8 @@ test('commit is denied until exact artifact verification and fresh Astra accepta
   const {options}=await fixture(),artifactDigest='a'.repeat(64)
   const plan=await reviewRoute({...input,reviewContext:{artifactDigest,commanderAgentId:'commander'}},options)
   const commit={reviewDecisionId:plan.routingDecision.decisionId,artifactDigest,commander:{agentId:'commander',provider:'openai',model:'gpt-6-astra',effort:'xhigh'},review:{agentId:'reviewer',provider:'openai',model:'gpt-6-astra',effort:'xhigh',artifactDigest,fresh:true,readOnly:true,accepted:true,blockers:[]},verification:{artifactDigest,scopeVerified:true,checks:['tests','build','typecheck','lint'].map(name=>({name,status:'passed',evidence:`${name} passed on integrated artifact`}))}}
-  assert.equal(checkAction({action:'commit'},options).allowed,false)
-  const approved=checkAction({action:'commit',commit},options)
+  assert.equal((await checkAction({action:'commit'},options)).allowed,false)
+  const approved=await checkAction({action:'commit',commit},options)
   assert.equal(approved.allowed,true);assert.equal(approved.evidenceSource,'host-attested');assert.equal(approved.hostMustEnforce,true)
   const mutations=[
     value=>value.artifactDigest='b'.repeat(64),value=>value.review.artifactDigest='b'.repeat(64),value=>value.review.accepted=false,
@@ -149,10 +149,10 @@ test('commit is denied until exact artifact verification and fresh Astra accepta
     value=>value.verification.checks.pop(),value=>value.verification.checks[0].status='failed',
     value=>{value.verification.checks[0].status='not_applicable';value.verification.checks[0].reason='skip tests'}
   ]
-  for(const mutate of mutations){const changed=structuredClone(commit);mutate(changed);assert.equal(checkAction({action:'commit',commit:changed,explicitlyAuthorized:true},options).allowed,false)}
+  for(const mutate of mutations){const changed=structuredClone(commit);mutate(changed);assert.equal((await checkAction({action:'commit',commit:changed,explicitlyAuthorized:true},options)).allowed,false)}
   const next=await reviewRoute({...input,reviewContext:{artifactDigest:'b'.repeat(64),commanderAgentId:'commander'}},options)
   assert.notEqual(next.routingDecision.decisionId,plan.routingDecision.decisionId)
   const worker=await routeTask(input,{...options,useJev:false})
-  assert.equal(checkAction({action:'commit',commit:{...commit,reviewDecisionId:worker.routingDecision.decisionId}},options).allowed,false)
-  assert.equal(checkAction({action:'commit',commit},{...options,planCache:new PlanCache()}).allowed,false)
+  assert.equal((await checkAction({action:'commit',commit:{...commit,reviewDecisionId:worker.routingDecision.decisionId}},options)).allowed,false)
+  assert.equal((await checkAction({action:'commit',commit},{...options,planCache:new PlanCache()})).allowed,false)
 })

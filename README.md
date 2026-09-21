@@ -30,6 +30,19 @@ Before Git commit, call `check_action({action:"commit",commit:{reviewDecisionId,
 
 This gate deterministically validates the submitted contract against the server-held review route. Verification and native-review results are **host attestations**: the remote server cannot inspect local Git, authenticate native agent messages, change the parent model or intercept arbitrary host commits. The installed skill makes the Astra commander enforce the gate before Git. External delegates have no Git/filesystem tools. No Git hook or additional persistence service is installed.
 
+## Trusted-host protected-action approval
+
+MCP arguments are model-supplied, so `explicitlyAuthorized:true` never proves owner approval. For deployment or another eligible non-commit protected action, the user's latest message must explicitly approve the exact action and scope. An administrator then uses the trusted server shell—not MCP—to mint a short-lived, one-time approval:
+
+```bash
+set -a; . /etc/trencher-agent-harness.env; set +a
+runuser -u trencher-harness --preserve-environment -- /opt/nodejs/node-v22.22.1-linux-x64/bin/node scripts/approve-action.mjs --action deploy --scope "production:trade-page:<artifact-or-release>" --reason "Owner approved this exact production release"
+```
+
+The CLI is disabled unless `HARNESS_ENABLE_TRUSTED_APPROVALS=true`. It writes only to the server-owned approval ledger, defaults to a 10-minute lifetime, and returns an `approvalId`. The commander calls `check_action({action:"deploy",approval:{id:approvalId,scope:"production:trade-page:<artifact-or-release>"}})` and may proceed only when it returns `allowed:true`. Action or scope mismatches, expiration, reuse, disabled configuration and MCP-only authorization are denied. Commit continues to require the separate final-acceptance gate; trusted approvals cannot bypass commit or retry-budget policy. The harness authorizes the named boundary but still cannot intercept commands run outside it.
+
+Approval-ledger locking fails closed. If `approval-store-lock-timeout` occurs, never delete the `.lock` directory while the service or an approval CLI may still be writing. Stop the service, confirm no approval CLI process remains, remove only the approval ledger's exact `.lock` directory, then restart the service. This prevents delayed writers from overlapping operator recovery.
+
 ## Verified registry
 
 Catalog metadata was verified on 2026-09-20. OpenAI models are native-host targets and therefore have no API price in the execution registry. External API prices are USD per million input/output tokens: xAI Grok 4.6 2/6; DeepSeek Flash 0.30/1.20 and V4 Pro 1.32/3.96 using peak cache-miss input; Kimi K3 3/15 cache-miss input/output. Sources: [OpenAI models](https://developers.openai.com/api/docs/models), [xAI models](https://docs.x.ai/developers/models), [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing), and [Kimi API overview](https://www.kimi.ai/help/kimi-api/api-overview).
@@ -38,7 +51,7 @@ Call `provider_readiness` once per build session. `refresh:false` indicates conf
 
 ## Run and verify
 
-After releasing, update the desktop's installed router skill from this repository and start a fresh thread so the MCP schema includes per-workstream evidence and pinned assignment execution. Existing conversations keep the schema captured when they began. No new credential is required; `JEV_LANE_MIN_CONFIDENCE` defaults to 0.70. Keep API commander disabled. Legacy `HARNESS_*_MODEL/PROVIDER/EFFORT` role overrides are ignored so they cannot weaken the fixed native contract.
+After releasing, update the desktop's installed router skill from this repository and start a fresh thread so the MCP schema includes per-workstream evidence, pinned assignment execution and trusted-host approval input. Existing conversations keep the schema captured when they began. No new credential is required; `JEV_LANE_MIN_CONFIDENCE` defaults to 0.70. Keep API commander disabled. Legacy `HARNESS_*_MODEL/PROVIDER/EFFORT` role overrides are ignored so they cannot weaken the fixed native contract.
 
 ```bash
 npm install

@@ -2,10 +2,11 @@ import { planTask } from '../orchestrator.js'
 import { createEvidencePacket } from '../context/evidencePacket.js'
 import { createTaskLedger } from '../context/taskLedger.js'
 import { nextAttemptState } from '../policy/antiLoop.js'
-import { authorizeAction } from '../policy/safety.js'
+import { authorizeAction, isTrustedApprovalAction } from '../policy/safety.js'
 import { createDelegation } from '../providers/registry.js'
 import { planCache } from '../router/planCache.js'
 import { checkCommit } from '../policy/commitGate.js'
+import { getApprovalStore } from '../policy/approvalStore.js'
 
 export async function routeTask(input, options = {}) {
   return (options.planCache || planCache).remember(await planTask(input, options))
@@ -25,8 +26,12 @@ export function checkContinue(input = {}) {
   })
 }
 
-export function checkAction(input = {}, options = {}) {
+export async function checkAction(input = {}, options = {}) {
   if(['commit','git_commit'].includes(String(input.action||'')))return checkCommit(input.commit,(options.planCache||planCache).get(input.commit?.reviewDecisionId))
+  if(input.approval&&isTrustedApprovalAction(String(input.action||''))){
+    if((options.env||process.env).HARNESS_ENABLE_TRUSTED_APPROVALS!=='true')return{allowed:false,reason:'trusted-host-approval-disabled'}
+    return(options.approvalStore||getApprovalStore(options.env||process.env)).consume({id:input.approval.id,action:String(input.action||''),scope:input.approval.scope})
+  }
   return authorizeAction(String(input.action || ''), {
     explicitlyAuthorized: Boolean(input.explicitlyAuthorized)
   })

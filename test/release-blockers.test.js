@@ -13,6 +13,7 @@ import { chatBody } from '../src/providers/chat.js'
 import { createServer } from '../src/mcp/server.js'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { taskIdentityFromContext } from '../src/execution/taskIdentity.js'
+import { ApprovalStore } from '../src/policy/approvalStore.js'
 
 const tempStore=async(env={})=>new AccountingStore({file:path.join(await mkdtemp(path.join(os.tmpdir(),'release-blockers-')),'ledger.json'),env})
 const report={name:'report_result',arguments:JSON.stringify({status:'complete',findings:['done'],artifact:'patch',evidence:['approved'],tests:['mock'],blockers:[]})}
@@ -75,5 +76,22 @@ test('MCP request_context to approved evidence to complete report is resumable e
     const firstCall=await request('tools/call',{name:'execute_routed_task',arguments:{task:'implement MCP continuation',files:['src/mcp.js'],requestedRoute:externalRoute}}),first=JSON.parse(firstCall.content[0].text)
     const secondCall=await request('tools/call',{name:'resume_routed_task',arguments:{jobId:first.execution.job.id,approvedEvidence:{evidence:['src/mcp.js:20 has the required direct call'],files:['src/mcp.js']}}}),second=JSON.parse(secondCall.content[0].text)
     assert.equal(first.execution.result.completion.reason,'bounded-context-requested');assert.equal(second.result.structured.status,'complete');assert.equal(second.taskId,first.execution.taskId);assert.equal(calls,2)
+  }finally{await clientTransport.close()}
+})
+
+test('MCP exposes and consumes a server-issued trusted-host approval exactly once',async()=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'mcp-approval-')),env={HARNESS_ENABLE_TRUSTED_APPROVALS:'true'},approvalStore=new ApprovalStore({file:path.join(directory,'approvals.json'),env})
+  const approval=await approvalStore.issue({action:'deploy',scope:'production:trade-page:abc123',reason:'owner approved exact release'})
+  const server=createServer({env,approvalStore,useJev:false,providers:{}}),[clientTransport,serverTransport]=InMemoryTransport.createLinkedPair(),pending=new Map();let nextId=1
+  clientTransport.onmessage=message=>{if(message.id!=null&&pending.has(message.id)){const {resolve,reject}=pending.get(message.id);pending.delete(message.id);message.error?reject(new Error(JSON.stringify(message.error))):resolve(message.result)}}
+  await server.connect(serverTransport);await clientTransport.start()
+  const request=(method,params={})=>new Promise((resolve,reject)=>{const id=nextId++;pending.set(id,{resolve,reject});void clientTransport.send({jsonrpc:'2.0',id,method,params})})
+  try{
+    await request('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'approval-test',version:'1'}});await clientTransport.send({jsonrpc:'2.0',method:'notifications/initialized',params:{}})
+    const listed=await request('tools/list'),schema=listed.tools.find(tool=>tool.name==='check_action')?.inputSchema
+    assert.ok(schema?.properties?.approval)
+    const args={action:'deploy',approval:{id:approval.id,scope:approval.scope}}
+    const first=JSON.parse((await request('tools/call',{name:'check_action',arguments:args})).content[0].text),second=JSON.parse((await request('tools/call',{name:'check_action',arguments:args})).content[0].text)
+    assert.equal(first.allowed,true);assert.equal(first.evidenceSource,'trusted-host-ledger');assert.equal(second.reason,'trusted-host-approval-already-consumed')
   }finally{await clientTransport.close()}
 })

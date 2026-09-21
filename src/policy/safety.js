@@ -1,3 +1,4 @@
 const PROTECTED = new Set(['commit','git_commit','deploy','force_push','delete_branch','wallet_permission_change','financial_execution','secret_read','retry_budget_override'])
 export function authorizeAction(action,{explicitlyAuthorized=false,authorizationSource='untrusted'}={}){if(['commit','git_commit'].includes(action))return{allowed:false,reason:'commit-requires-final-acceptance-gate'};if(!PROTECTED.has(action))return{allowed:true,reason:'not-protected'};if(explicitlyAuthorized&&authorizationSource==='trusted_host'&&action!=='retry_budget_override')return{allowed:true,reason:'trusted-host-authorization'};return{allowed:false,reason:explicitlyAuthorized?'untrusted-authorization-ignored':'protected-action-requires-explicit-authorization'}}
 export function isProtectedAction(action){return PROTECTED.has(action)}
+export function isTrustedApprovalAction(action){return PROTECTED.has(action)&&!['commit','git_commit','retry_budget_override'].includes(action)}

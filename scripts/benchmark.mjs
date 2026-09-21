@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +11,7 @@ import { nextAttemptState } from '../src/policy/antiLoop.js'
 import { executeRoutedTask } from '../src/mcp/tools-v04.js'
 import { reviewRoute, checkAction } from '../src/mcp/tools.js'
 import { AccountingStore } from '../src/execution/accountingStore.js'
+import { ApprovalStore } from '../src/policy/approvalStore.js'
 import { PlanCache } from '../src/router/planCache.js'
 import { routingModels } from '../src/router/jev.js'
 import { atLeast, boundedAt, gradeProviderTask, summarize } from '../benchmark/grading.js'
@@ -54,6 +56,10 @@ async function deterministicChecks() {
   }
   const retryOverride = authorizeAction('retry_budget_override', { explicitlyAuthorized: true, authorizationSource: 'trusted_host' })
   check('policy.protected.retry-budget', 'safety', retryOverride.allowed === false, false, retryOverride, 3)
+  const approvalEnv={HARNESS_ENABLE_TRUSTED_APPROVALS:'true'},approvalDirectory=await mkdtemp(path.join(os.tmpdir(),'benchmark-approval-')),approvalStore=new ApprovalStore({file:path.join(approvalDirectory,'approvals.json'),env:approvalEnv})
+  const hostApproval=await approvalStore.issue({action:'deploy',scope:'benchmark:production:artifact',reason:'benchmark owner approval'}),approvalArgs={action:'deploy',approval:{id:hostApproval.id,scope:hostApproval.scope}}
+  const allowedDeployment=await checkAction(approvalArgs,{env:approvalEnv,approvalStore}),replayedDeployment=await checkAction(approvalArgs,{env:approvalEnv,approvalStore})
+  check('policy.protected.trusted-host-approval','safety',allowedDeployment.allowed===true&&allowedDeployment.oneTime===true&&replayedDeployment.reason==='trusted-host-approval-already-consumed','one scoped trusted-host approval succeeds exactly once',{allowed:allowedDeployment,replay:replayedDeployment},4)
 
   const withoutEvidence = nextAttemptState({ attempts: [{}], newEvidence: false })
   const twoStrikes = nextAttemptState({ attempts: [{}, {}], newEvidence: true })
@@ -84,9 +90,10 @@ async function deterministicChecks() {
 
   const planCache=new PlanCache(),artifactDigest='a'.repeat(64),review=await reviewRoute({task:'Review the complete integrated benchmark change.',rootCause:'implementation-complete',reviewContext:{artifactDigest,commanderAgentId:'benchmark-commander'}},{useJev:false,env:{},planCache})
   const commit={reviewDecisionId:review.routingDecision.decisionId,artifactDigest,commander:{agentId:'benchmark-commander',provider:'openai',model:'gpt-6-astra',effort:'xhigh'},review:{agentId:'benchmark-reviewer',provider:'openai',model:'gpt-6-astra',effort:'xhigh',artifactDigest,fresh:true,readOnly:true,accepted:true,blockers:[]},verification:{artifactDigest,scopeVerified:true,checks:['tests','build','typecheck','lint'].map(name=>({name,status:'passed',evidence:`benchmark ${name} passed`}))}}
-  const approved=checkAction({action:'commit',commit},{planCache}),stale=structuredClone(commit);stale.review.artifactDigest='b'.repeat(64)
+  const approved=await checkAction({action:'commit',commit},{planCache}),stale=structuredClone(commit);stale.review.artifactDigest='b'.repeat(64)
+  const staleResult=await checkAction({action:'commit',commit:stale},{planCache})
   check('policy.review.fixed-astra', 'quality-gate', review.route.model === 'gpt-6-astra' && review.route.effort === 'xhigh' && review.delegation?.policy?.readOnly === true && review.routingDecision?.handoff?.orchestration?.maxAgents === 1, 'one read-only Astra XHigh reviewer', {route:review.route,handoff:review.routingDecision?.handoff}, 4)
-  check('policy.commit-gate', 'quality-gate', approved.allowed === true && checkAction({action:'commit',commit:stale},{planCache}).allowed === false, 'matching acceptance allowed; stale acceptance denied', {approved,stale:checkAction({action:'commit',commit:stale},{planCache})}, 5)
+  check('policy.commit-gate', 'quality-gate', approved.allowed === true && staleResult.allowed === false, 'matching acceptance allowed; stale acceptance denied', {approved,stale:staleResult}, 5)
 }
 
 let session = null
