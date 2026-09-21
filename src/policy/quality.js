@@ -18,12 +18,12 @@ const canonicalSourcePath=value=>String(value||'').replaceAll('\\','/').replace(
 export function flashSourcePaths(context={}) {
   const approved=context.approvedEvidence||{}
   return[...new Set([
-    ...(context.files||[]),...(context.inspected||[]).map(value=>value?.path),
-    ...(approved.files||[]),...(approved.inspected||[]).map(value=>value?.path)
+    ...(context.files||[]),...(context.inspected||[]).map(value=>value?.path),...(context.excerpts||[]).map(value=>value?.path),
+    ...(approved.files||[]),...(approved.inspected||[]).map(value=>value?.path),...(approved.excerpts||[]).map(value=>value?.path)
   ].map(canonicalSourcePath).filter(Boolean))]
 }
 export const allowsFlash = context => context?.taskKind==='mechanical' && context?.risk!=='high' && flashSourcePaths(context).length===1
 export function reviewPolicy(kind,risk,probability=0) {
   const required=kind!=='research'||risk==='high'
-  return{required,recommended:required,reason:required?'mandatory-astra-final-acceptance':'read-only-research',probability,reviewer:{...FINAL_REVIEWER},scope:'complete-integrated-diff',before:'commit',hostEnforced:true}
+  return{required,recommended:required,reason:required?'mandatory-astra-final-acceptance':'read-only-research',probability,reviewer:{...FINAL_REVIEWER},selection:'review_route: cross-model eligible for completely supplied Astra-authored artifacts; otherwise fresh native Astra',independentReviewCount:1,finalAuthority:{...COMMANDER},scope:'complete-integrated-diff',before:'commit',hostEnforced:true}
 }

@@ -8,6 +8,7 @@ import { taskIdentityFromContext, digestValue } from './taskIdentity.js'
 import { normalizeApprovedEvidence, safeRelativePath } from './boundedEvidence.js'
 import { providerExecutionPolicy } from '../policy/providerExecution.js'
 import { taskKind, allowsFlash } from '../policy/quality.js'
+import { externalReviewEligibility, reviewReceipt } from '../policy/independentReview.js'
 
 const stores=new Map(), active=new Map()
 export function taskIdentity(delegation,workspace=''){return taskIdentityFromContext(delegation.context,workspace)}
@@ -25,7 +26,7 @@ function validateTools(result){
   }
   return{allowed:denied.length===0,denied}
 }
-function structuredOutput(result,incomplete){const call=(result.metadata?.toolCalls||[]).find(item=>item.name==='report_result');let value=null;try{value=call?(typeof call.arguments==='string'?JSON.parse(call.arguments):call.arguments):null}catch{}const valid=value&&['complete','incomplete','blocked'].includes(value.status)&&(value.artifact==null||typeof value.artifact==='string')&&['findings','evidence','tests','blockers'].every(key=>Array.isArray(value[key]));if(valid)return{status:incomplete?'incomplete':value.status,findings:value.findings,artifact:value.artifact??null,evidence:value.evidence,tests:value.tests,blockers:value.blockers,usage:result.usage};return{status:'incomplete',findings:[],artifact:result.output||null,evidence:[],tests:[],blockers:['Delegate did not return a valid report_result contract.'],usage:result.usage}}
+function structuredOutput(result,incomplete){const call=(result.metadata?.toolCalls||[]).find(item=>item.name==='report_result');let value=null;try{value=call?(typeof call.arguments==='string'?JSON.parse(call.arguments):call.arguments):null}catch{}const valid=value&&['complete','incomplete','blocked'].includes(value.status)&&(value.artifact==null||typeof value.artifact==='string')&&['findings','evidence','tests','blockers'].every(key=>Array.isArray(value[key]));if(valid)return{status:incomplete?'incomplete':value.status,findings:value.findings,artifact:value.artifact??null,evidence:value.evidence,tests:value.tests,blockers:value.blockers,...(value.review?{review:value.review}:{}),usage:result.usage};return{status:'incomplete',findings:[],artifact:result.output||null,evidence:[],tests:[],blockers:['Delegate did not return a valid report_result contract.'],usage:result.usage}}
 function contextRequest(result){const call=(result.metadata?.toolCalls||[]).find(item=>item.name==='request_context');if(!call)return null;try{return typeof call.arguments==='string'?JSON.parse(call.arguments):call.arguments}catch{return null}}
 function reportArtifact(result){const call=(result.metadata?.toolCalls||[]).find(item=>item.name==='report_result');try{return call?(typeof call.arguments==='string'?JSON.parse(call.arguments):call.arguments):null}catch{return null}}
 function validatedTarget(provider,model,effort){let validated=validateModel({provider,model,effort});if(!validated.allowed&&!['openai','xai','deepseek','kimi'].includes(provider))validated={allowed:true,entry:{provider,id:model,inputPerMTok:0,outputPerMTok:0,efforts:[effort].filter(Boolean)},localAdapter:true};return validated}
@@ -34,6 +35,7 @@ async function dispatch({request,provider,model,effort,budget,ledger,resolvedTas
   const providerPolicy=providerExecutionPolicy(provider)
   if(!providerPolicy.allowed)return{executed:false,reason:providerPolicy.reason,executionMode:providerPolicy.executionMode,billingSource:providerPolicy.billingSource,provider,model,effort,taskId:resolvedTaskId}
   const policyTarget=validatedTarget(provider,model,effort)
+  if(request.role==='reviewer'&&!externalReviewEligibility(request.context,request.context?.reviewContext).allowed)return{executed:false,reason:'quality-capability-policy',detail:'complete-independent-review-evidence-required',taskId:resolvedTaskId}
   if(policyTarget.allowed&&!policyTarget.localAdapter&&(!eligibleForRole(request.role,policyTarget.entry)||(model==='deepseek-flash'&&!allowsFlash({...request.context,taskKind:taskKind(request.context,request.context?.taskKind)}))))return{executed:false,reason:'quality-capability-policy',taskId:resolvedTaskId}
   const adapter=getProvider(provider),payload=typeof adapter.prepare==='function'?adapter.prepare(request):request,preflight=checkEstimatedInput(payload,budget)
   if(!preflight.allowed)return{executed:false,reason:'estimated-input-too-large',preflight,taskId:resolvedTaskId}
@@ -61,7 +63,7 @@ async function dispatch({request,provider,model,effort,budget,ledger,resolvedTas
     result.completion={status:incomplete?'incomplete':'complete',reason:completionReason};result.structured=structuredOutput(result,incomplete)
     const continuation=completionReason==='bounded-context-requested'?{reason:completionReason,request:contextRequest(result),execution:{role:request.role,task:request.task,context:request.context,instruction:request.instruction,provider,model,effort,budget,responseId:result.metadata?.responseId||null}}:null
     const actualCostUsd=estimateCostUsd(validated.entry,result.usage.inputTokens,result.usage.outputTokens)
-    const job=await ledger.finalize(reservation.job.id,{status:incomplete?'incomplete':'completed',usage:result.usage,actualCostUsd,completionReason,continuation})
+    const job=await ledger.finalize(reservation.job.id,{status:incomplete?'incomplete':'completed',usage:result.usage,actualCostUsd,completionReason,continuation,review:reviewReceipt(request,report,incomplete)})
     return{executed:true,result,job,preflight,taskId:resolvedTaskId,state:{active:0,inputTokens:result.usage.inputTokens,outputTokens:result.usage.outputTokens,delegations:(reservation.job.continuationIndex||0)+1}}
   }catch(error){const uncertain=Boolean(error?.uncertainBilling);const job=await ledger.finalize(reservation.job.id,{status:controller.signal.aborted?'cancelled':'failed',actualCostUsd:uncertain?null:0,error:error?.code||'provider-error',uncertainBilling:uncertain});return{executed:false,reason:controller.signal.aborted?'cancelled':(error?.code||'provider-error'),error:{provider:error?.provider||provider,code:error?.code||'provider-error',status:error?.status||null,retryable:Boolean(error?.retryable),uncertainBilling:uncertain},job,preflight,taskId:resolvedTaskId}}
   finally{clearTimeout(deadlineTimer);signal?.removeEventListener?.('abort',forward);active.delete(reservation.job.id)}
@@ -70,7 +72,7 @@ async function dispatch({request,provider,model,effort,budget,ledger,resolvedTas
 export async function executeDelegation({delegation,provider,model,effort,budget:asked,env=process.env,idempotencyKey,workspace='',deadlineMs,store,signal,attemptClass='worker',ownerAuthorizedRetry=false,retryReason=''}) {
   const budget=resolveBudget(asked,env),ledger=store||getAccountingStore(env),resolvedTaskId=taskIdentity(delegation,workspace)
   const request={role:delegation.role,task:delegation.context?.task||'',context:delegation.context||{},instruction:delegation.instruction||'',provider,model,effort,budget,timeoutMs:Math.min(Number(env.HARNESS_PROVIDER_TIMEOUT_MS)||30000,Number(deadlineMs)||Infinity)}
-  const evidenceHash=digestValue({rootCause:delegation.context?.rootCause||null,evidence:delegation.context?.evidence||[],facts:delegation.context?.facts||[],inspected:delegation.context?.inspected||[]})
+  const evidenceHash=digestValue({rootCause:delegation.context?.rootCause||null,evidence:delegation.context?.evidence||[],facts:delegation.context?.facts||[],inspected:delegation.context?.inspected||[],excerpts:delegation.context?.excerpts||[]})
   return dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,ownerAuthorizedRetry,retryReason})
 }
 
@@ -78,6 +80,7 @@ export async function resumeDelegation({jobId,approvedEvidence,budget:asked,env=
   const ledger=store||getAccountingStore(env),prior=await ledger.getJob(jobId)
   if(!prior)return{executed:false,reason:'job-not-found'}
   if(prior.status!=='incomplete'||prior.completionReason!=='bounded-context-requested'||!prior.continuation)return{executed:false,reason:'job-not-resumable',job:prior}
+  if(prior.continuation.execution.role==='reviewer')return{executed:false,reason:'review-requires-new-complete-evidence-route',job:prior}
   const normalized=normalizeApprovedEvidence(approvedEvidence,prior.continuation.execution.task,prior.continuation.execution.context?.risk)
   if(!normalized.allowed)return{executed:false,reason:normalized.reason,validation:normalized,job:prior}
   const original=prior.continuation.execution.budget,usage=(await ledger.getUsage(prior.taskId)).task||{},requested=resolveBudget(asked,env)

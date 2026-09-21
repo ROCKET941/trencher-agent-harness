@@ -1,4 +1,4 @@
-import { createEvidencePacket } from './context/evidencePacket.js'
+import { createEvidencePacket, CONTEXT_PROFILES } from './context/evidencePacket.js'
 import { classifyRisk } from './router/risk.js'
 import { deterministicRoute } from './router/deterministic.js'
 import { askRoutingJev } from './router/jev.js'
@@ -9,6 +9,7 @@ import { withDecisionTrace } from './router/decisionTrace.js'
 import path from 'node:path'
 import { COMMANDER, taskKind, reviewPolicy } from './policy/quality.js'
 import { ARTIFACT_DIGEST, requiredVerification } from './policy/commitGate.js'
+import { chooseReviewTarget } from './router/reviewSelection.js'
 
 const rank = { scout: 0, engineer: 1, deep_debugger: 2, reviewer: 2, exceptional: 3 }
 const workerRoles = new Set(['scout', 'engineer', 'deep_debugger', 'exceptional'])
@@ -85,7 +86,7 @@ function normalizeWorkstreams(input, risk = 'normal') {
   }
   const workstreams = values.map((value, index) => {
     const task=String(value?.task||''),workstreamRisk=risk==='high'||classifyRisk(task).risk==='high'?'high':risk
-    const bounded=createEvidencePacket({task,risk:workstreamRisk,rootCause:value?.rootCause??null,evidence:Array.isArray(value?.evidence)?value.evidence:[]},{contextProfile:'tight'})
+    const bounded=createEvidencePacket({task,risk:workstreamRisk,rootCause:value?.rootCause??null,evidence:Array.isArray(value?.evidence)?value.evidence:[],excerpts:value?.excerpts,facts:value?.facts,inspected:value?.inspected},{contextProfile:'tight'})
     return{
       id: String(value?.id || `workstream-${index + 1}`).slice(0, 80),
       task: bounded.task,
@@ -93,6 +94,7 @@ function normalizeWorkstreams(input, risk = 'normal') {
       risk: workstreamRisk,
       rootCause: bounded.rootCause,
       evidence: bounded.evidence,
+      excerpts: bounded.excerpts, facts: bounded.facts, inspected: bounded.inspected,
       files: [...new Set((Array.isArray(value?.files) ? value.files : []).map(String).filter(Boolean))].slice(0, 3),
       tests: [...new Set((Array.isArray(value?.tests) ? value.tests : []).map(String).filter(Boolean))].slice(0, 2),
       dependsOn: [...new Set((Array.isArray(value?.dependsOn) ? value.dependsOn : []).map(String).filter(Boolean))].slice(0, 3),
@@ -176,7 +178,7 @@ function scopedWorkstreamAdvice(advice, index, expectedIds) {
 function workstreamPacket(workstream, input, contextProfile) {
   const packet=createEvidencePacket({
     task: workstream.task, risk: workstream.risk, rootCause: workstream.rootCause, evidence: workstream.evidence,
-    files: workstream.files, tests: workstream.tests, protectedBoundaries: input.protectedBoundaries || []
+    files: workstream.files, tests: workstream.tests, excerpts:workstream.excerpts, facts:workstream.facts, inspected:workstream.inspected, protectedBoundaries: input.protectedBoundaries || []
   }, { contextProfile })
   packet.truncation.removed=[...new Set([...(workstream.truncation?.removed||[]),...packet.truncation.removed])]
   packet.truncation.occurred=Boolean(workstream.truncation?.occurred||packet.truncation.occurred)
@@ -207,25 +209,34 @@ export async function planTask(input, options = {}) {
   const fallback = options.review ? { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' } : deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length, taskKind:kind })
   const mandatory = options.review ? 'reviewer' : mandatoryRole(input, initialPacket)
   let advice = null
-  const jevWorkstreams=normalizedWorkstreams.nonOverlapping&&normalizedWorkstreams.workstreams.length>1?normalizedWorkstreams.workstreams:[]
+  const jevWorkstreams=normalizedWorkstreams.nonOverlapping&&normalizedWorkstreams.workstreams.length>0?normalizedWorkstreams.workstreams:[]
   if (options.useJev !== false && !options.review) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || fallback.role, taskKind:kind, workstreams:jevWorkstreams })
   const worker = options.review ? { route: fallback, trace: { source: 'deterministic-review-policy', mandatoryFloor: 'reviewer' } } : chooseWorker(fallback, mandatory, advice, env,kind)
   const route = worker.route
   const contextPolicy = applyAdvice(initialPacket, deterministicContext(initialPacket, route), advice, env)
+  // Do not cut a complete review or prepared source packet back to tight merely
+  // because it names files. Pick the smallest finite envelope that fits counts.
+  if(options.review||input.excerpts?.length){
+    const fits=Object.keys(CONTEXT_PROFILES).find(profile=>['files','tests','docs','evidence','openQuestions','facts','inspected','excerpts'].every(key=>(input[key]?.length||0)<=(CONTEXT_PROFILES[profile][key==='excerpts'?'files':key]||0)))
+    if(fits&&profileRank[fits]>profileRank[contextPolicy.contextProfile])contextPolicy.contextProfile=fits
+    if(options.review)contextPolicy.retrievalMode='exact'
+  }
   const packet = createEvidencePacket({ ...input, risk }, { contextProfile: contextPolicy.contextProfile })
   const reviewContext=options.review && ARTIFACT_DIGEST.test(input.reviewContext?.artifactDigest||'') && typeof input.reviewContext?.commanderAgentId==='string' && input.reviewContext.commanderAgentId.trim()
-    ? {artifactDigest:input.reviewContext.artifactDigest,commanderAgentId:input.reviewContext.commanderAgentId.slice(0,120),requiredChecks:requiredVerification()} : null
+    ? {artifactDigest:input.reviewContext.artifactDigest,commanderAgentId:input.reviewContext.commanderAgentId.slice(0,120),requiredChecks:requiredVerification(),implementationProviders:input.reviewContext.implementationProviders,changedFiles:input.reviewContext.changedFiles,evidenceComplete:input.reviewContext.evidenceComplete===true} : null
   if(reviewContext)packet.reviewContext=reviewContext
   const reviewProbability = advice?.reviewRequired?.probability ?? 0
   const review = options.review?{...reviewPolicy('research','normal'),reason:'final-review-in-progress',required:false,recommended:false}:reviewPolicy(implementationRequired?'implementation':kind,risk,reviewProbability)
   const policy = { ...contextPolicy, taskKind:kind, review, commander:{...COMMANDER}, commitGate:{required:implementationRequired,tool:'check_action',action:'commit',evidenceSource:'host-attested'} }
   const requested = input.requestedRoute || null
   const overrides = []
-  const target = chooseTarget(route, requested, Boolean(input.requestedRouteAuthorized), advice, env, mandatory, overrides,{...packet,taskKind:kind})
+  const target = options.review ? await chooseReviewTarget(packet,input,options) : chooseTarget(route, requested, Boolean(input.requestedRouteAuthorized), advice, env, mandatory, overrides,{...packet,taskKind:kind})
+  if(options.review)advice=target.advice
+  policy.evidencePreparation={hasSourceExcerpts:packet.excerpts.length>0,sourcePaths:packet.excerpts.map(value=>value.path),instruction:'Supply source/diff excerpts for external work. A file path is not file content. After discovery resolves the cause, prepare one bounded assignment or disjoint workstreams; that material evidence change may justify one new route.'}
   const parallel = parallelPlan(input, advice, env, normalizedWorkstreams)
   const phaseExecutionContext=executionContext(input)
   const workstreamPlans=[]
-  if(parallel.nonOverlapping&&parallel.workstreams.length>1){
+  if(parallel.nonOverlapping&&parallel.workstreams.length>0){
     const expectedIds=parallel.workstreams.map(value=>value.id)
     for(const [index,workstream] of parallel.workstreams.entries()){
       const scopedAdvice=scopedWorkstreamAdvice(advice,index,expectedIds),workstreamOverrides=[]
@@ -260,13 +271,13 @@ export async function planTask(input, options = {}) {
     handoff:plan.routingDecision.handoff,dispatch:plan.routingDecision.dispatch,delegation:plan.delegation,
     evidenceDigest:plan.routingDecision.evidenceDigest
   }))
-  const hasAssignments=parallel.assignments.length>1
+  const hasAssignments=parallel.assignments.length>0
   const modes=new Set(parallel.assignments.map(value=>value.effective.executionMode))
   const handoff = hasAssignments ? {
     required:true,mode:modes.size>1?'mixed':modes.values().next().value,scope:'workstream-assignments',parentModelUnchanged:true,
     billingSource:modes.size>1?'mixed':(modes.has('native_host')?'chatgpt_plan':'external_api'),
     orchestration:{strategy:'heterogeneous-non-overlapping',maxAgents:parallel.effective,routeOncePerPhase:true,
-      instruction:'Use each workstream assignment exactly once. Spawn Luna Max research assignments; keep Astra implementation assignments in the commander; execute external assignments by decisionId. Run at most maxAgents concurrently. Astra integrates and verifies all results, then obtains exactly one fresh Astra XHigh review of the complete integrated diff.'}
+      instruction:'Use each workstream assignment exactly once. Spawn Luna Max research assignments; keep Astra implementation assignments in the commander; execute external assignments by decisionId. Run at most maxAgents concurrently. Astra integrates and verifies all results, then obtains one independent review of the complete integrated diff.'}
   } : handoffFor(target.effective,{strategy:parallel.effective>1?'parallel-non-overlapping':'single',maxAgents:parallel.effective})
   const selection = { worker: worker.trace, target: target.trace }
   const routingDecision = {

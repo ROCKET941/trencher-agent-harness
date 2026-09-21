@@ -1,4 +1,7 @@
 import { COMMANDER, FINAL_REVIEWER } from './quality.js'
+import { digestValue } from '../execution/taskIdentity.js'
+import { externalReviewEligibility } from './independentReview.js'
+import { getModel, eligibleForRole } from '../providers/catalog.js'
 
 const CHECKS=['tests','build','typecheck','lint']
 export const ARTIFACT_DIGEST=/^[a-f0-9]{64}$/
@@ -7,15 +10,21 @@ export const requiredVerification = () => [...CHECKS]
 // MCP cannot inspect a native host's Git worktree or authenticate subagent turns.
 // These are explicit host attestations, pinned to a server-owned review route;
 // the host must also enforce the returned denial before invoking Git.
-export function checkCommit(input, reviewPlan) {
+export function checkCommit(input, reviewPlan, reviewJob=null) {
   const deny=reason=>({allowed:false,reason,evidenceSource:'host-attested',hostMustEnforce:true})
   if(!reviewPlan||reviewPlan.route?.role!=='reviewer')return deny('commit-requires-pinned-final-review')
   const target=reviewPlan.routingDecision?.effective,context=reviewPlan.routingDecision?.reviewContext
-  if(target?.provider!==FINAL_REVIEWER.provider||target?.model!==FINAL_REVIEWER.model||target?.effort!==FINAL_REVIEWER.effort||target?.executionMode!=='native_host')return deny('commit-requires-astra-xhigh-review')
+  const external=target?.executionMode==='external_api'
+  if(external){
+    const model=getModel(target.provider,target.model)
+    if(!model||!eligibleForRole('reviewer',model)||!externalReviewEligibility(reviewPlan.packet,context).allowed)return deny('commit-external-review-ineligible')
+    if(input?.commander?.accepted!==true)return deny('commit-requires-astra-final-signoff')
+    if(!reviewJob||reviewJob.id!==input?.review?.jobId||reviewJob.idempotencyKey!==reviewPlan.routingDecision.decisionId||reviewJob.status!=='completed'||reviewJob.provider!==target.provider||reviewJob.model!==target.model||reviewJob.effort!==target.effort||reviewJob.review?.accepted!==true||reviewJob.review.artifactDigest!==context.artifactDigest||reviewJob.review.contextDigest!==digestValue(reviewPlan.delegation.context))return deny('commit-requires-completed-pinned-external-review')
+  }else if(target?.provider!==FINAL_REVIEWER.provider||target?.model!==FINAL_REVIEWER.model||target?.effort!==FINAL_REVIEWER.effort||target?.executionMode!=='native_host')return deny('commit-requires-astra-xhigh-review')
   if(!ARTIFACT_DIGEST.test(input?.artifactDigest||'')||context?.artifactDigest!==input.artifactDigest)return deny('commit-artifact-digest-mismatch')
   if(input.commander?.provider!==COMMANDER.provider||input.commander?.model!==COMMANDER.model||input.commander?.effort!==COMMANDER.effort||input.commander?.agentId!==context?.commanderAgentId)return deny('commit-requires-astra-xhigh-commander')
   const review=input.review
-  if(!review?.agentId||review.agentId===context?.commanderAgentId||review.fresh!==true||review.readOnly!==true||review.provider!==FINAL_REVIEWER.provider||review.model!==FINAL_REVIEWER.model||review.effort!==FINAL_REVIEWER.effort)return deny('commit-requires-fresh-independent-reviewer')
+  if(!review?.agentId||review.agentId===context?.commanderAgentId||review.fresh!==true||review.readOnly!==true||review.provider!==target.provider||review.model!==target.model||review.effort!==target.effort||(external&&review.agentId!==`job:${reviewJob.id}`))return deny('commit-requires-fresh-independent-reviewer')
   if(review.artifactDigest!==input.artifactDigest)return deny('commit-review-is-stale')
   if(review.accepted!==true||!Array.isArray(review.blockers)||review.blockers.length)return deny('commit-review-not-accepted')
   const verification=input.verification

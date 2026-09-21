@@ -82,7 +82,8 @@ test('workstreams get task-specific pools in one call; research remains read-onl
   const [research,code]=plan.routingDecision.parallel.assignments
   assert.equal(research.effective.model,'gpt-5.6-luna');assert.equal(research.effective.effort,'max');assert.equal(research.delegation.policy.readOnly,true)
   assert.equal(code.effective.model,'kimi-k3');assert.equal(code.delegation.policy.review.required,true)
-  assert.match(plan.routingDecision.handoff.orchestration.instruction,/exactly one fresh Astra XHigh review/)
+  assert.equal(plan.review.independentReviewCount,1)
+  assert.equal(plan.review.finalAuthority.model,'gpt-6-astra')
 })
 
 test('implementation workstreams require phase acceptance and their own commit gate inside research phases',async()=>{

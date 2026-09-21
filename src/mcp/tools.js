@@ -7,6 +7,7 @@ import { createDelegation } from '../providers/registry.js'
 import { planCache } from '../router/planCache.js'
 import { checkCommit } from '../policy/commitGate.js'
 import { getApprovalStore } from '../policy/approvalStore.js'
+import { getJobStatus } from '../execution/executor.js'
 
 export async function routeTask(input, options = {}) {
   return (options.planCache || planCache).remember(await planTask(input, options))
@@ -27,7 +28,11 @@ export function checkContinue(input = {}) {
 }
 
 export async function checkAction(input = {}, options = {}) {
-  if(['commit','git_commit'].includes(String(input.action||'')))return checkCommit(input.commit,(options.planCache||planCache).get(input.commit?.reviewDecisionId))
+  if(['commit','git_commit'].includes(String(input.action||''))){
+    const plan=(options.planCache||planCache).get(input.commit?.reviewDecisionId)
+    const job=plan?.routingDecision?.effective?.executionMode==='external_api'&&input.commit?.review?.jobId?await getJobStatus(input.commit.review.jobId,options):null
+    return checkCommit(input.commit,plan,job)
+  }
   if(input.approval&&isTrustedApprovalAction(String(input.action||''))){
     if((options.env||process.env).HARNESS_ENABLE_TRUSTED_APPROVALS!=='true')return{allowed:false,reason:'trusted-host-approval-disabled'}
     return(options.approvalStore||getApprovalStore(options.env||process.env)).consume({id:input.approval.id,action:String(input.action||''),scope:input.approval.scope})

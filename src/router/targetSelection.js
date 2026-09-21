@@ -85,7 +85,7 @@ export function chooseTarget(route, requested, requestedRouteAuthorized, advice,
   return {
     recommended, effective: execution(effective),
     trace: {
-      source, fallback: execution(laneFallback),
+      source, fallback: execution(laneFallback), candidateCounts:{native:models.filter(value=>value.executionMode==='native_host').length,external:models.filter(value=>value.executionMode==='external_api').length},
       lane: { choice: laneAdvice?.choice || null, confidence: laneAdvice?.confidence ?? null, threshold: laneMinimum, accepted: laneAccepted, effective: executionModeForProvider(effective.provider), reason: laneAccepted ? 'validated-jev-lane' : modern ? (!laneAvailable ? 'lane-unavailable-or-invalid' : 'insufficient-confidence') : 'legacy-target-or-deterministic-fallback' },
       jev: { choice: targetAdvice?.choice ?? null, confidence: targetAdvice?.confidence ?? null, effort: effortChoice ?? null, effortConfidence: effortConfidence ?? null, effortAccepted, threshold: minimum, accepted, reason },
       requested: requested ? { value: requested, ...requestedTrace } : null

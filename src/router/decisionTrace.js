@@ -9,7 +9,7 @@ const digest = value => createHash('sha256').update(canonical(value)).digest('he
 
 export function withDecisionTrace(plan) {
   const decision = plan.routingDecision || {}
-  const { routingDecision: _nestedDecision, ...route } = plan.route || {}
+  const { routingDecision: _nestedDecision, modelSelectionSource: _modelSource, modelSelectionReason: _modelReason, ...route } = plan.route || {}
   const evidenceDigest = digest(plan.packet || {})
   // Exclude call IDs, timestamps, cache state, usage, and raw Jev responses.
   const payloadDigest = digest({
@@ -23,5 +23,5 @@ export function withDecisionTrace(plan) {
     routingPhaseId: decision.planReuse?.routingPhaseId || null
   })
   const routingDecision = { ...decision, decisionId: `route_${payloadDigest.slice(0, 32)}`, payloadDigest, evidenceDigest }
-  return { ...plan, routingDecision, route: { ...route, routingDecision } }
+  return { ...plan, routingDecision, route: { ...route, modelSelectionSource:decision.selection?.target?.source||null, modelSelectionReason:decision.selection?.target?.reason||decision.selection?.target?.lane?.reason||null, routingDecision } }
 }

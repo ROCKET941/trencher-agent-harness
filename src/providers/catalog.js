@@ -30,7 +30,8 @@ export function validateModel({ provider, model, effort }) {
 export function eligibleForRole(role,entry){
   if(role==='scout')return entry.provider==='openai'&&entry.id==='gpt-5.6-luna'
   if(entry.provider==='openai')return entry.id==='gpt-6-astra'&&Object.hasOwn(roleRank,role)
-  if(role==='reviewer')return false // Final acceptance belongs to one fresh native Astra.
+  // External review is additionally gated on complete, independent evidence.
+  if(role==='reviewer')return ['grok-4.6','deepseek-v4-pro','kimi-k3'].includes(entry.id)
   return(capabilityRank.get(`${entry.provider}:${entry.id}`)??-1)>=(roleRank[role]??99)
 }
 export const modelCapability = entry => capabilityRank.get(`${entry.provider}:${entry.id}`) ?? -1
