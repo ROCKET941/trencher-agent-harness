@@ -4,9 +4,7 @@ import { deterministicRoute } from './router/deterministic.js'
 import { askRoutingJev } from './router/jev.js'
 import { nextAttemptState } from './policy/antiLoop.js'
 import { createDelegation } from './providers/registry.js'
-import { resolveRoleTarget } from './execution/roleResolver.js'
-import { validateModel, eligibleForRole } from './providers/catalog.js'
-import { executionModeForProvider } from './policy/providerExecution.js'
+import { chooseTarget } from './router/targetSelection.js'
 import { withDecisionTrace } from './router/decisionTrace.js'
 import path from 'node:path'
 
@@ -56,14 +54,6 @@ function mandatoryRole(input, packet) {
   return null
 }
 
-function decodeTarget(choice, effortChoice) {
-  if (typeof choice !== 'string') return null
-  const [provider, ...rest] = choice.split(':')
-  const effort = rest.length === 1 ? effortChoice : rest.pop()
-  const model = rest.join(':')
-  return provider && model && effort ? { provider, model, effort } : null
-}
-
 function chooseWorker(fallback, mandatory, advice, env) {
   const minimum = threshold(env.JEV_MIN_CONFIDENCE, 0.70)
   const jevChoice = advice?.available ? advice.worker?.choice : null
@@ -77,68 +67,6 @@ function chooseWorker(fallback, mandatory, advice, env) {
       fallback: fallback.role,
       mandatoryFloor: mandatory,
       jev: { choice: jevChoice, confidence: advice?.worker?.confidence ?? null, threshold: minimum, accepted, reason: accepted ? 'validated-jev-choice' : (!valid ? 'missing-or-invalid-choice' : (!floorMet ? 'deterministic-role-floor' : 'insufficient-confidence')) }
-    }
-  }
-}
-
-function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, mandatory, overrides) {
-  const configuredTarget = resolveRoleTarget(route.role, env)
-  const configuredValidation = validateModel(configuredTarget)
-  const configuredAllowed = configuredValidation.allowed && eligibleForRole(route.role, configuredValidation.entry)
-  const fallbackTarget = configuredAllowed ? configuredTarget : resolveRoleTarget(route.role, {})
-  const fallback = { role: route.role, ...fallbackTarget }
-  if (!configuredAllowed) overrides.push({ field: 'configuredTarget', requested: configuredTarget, applied: fallback, reason: configuredValidation.reason || 'deterministic-capability-floor' })
-  const minimum = threshold(env.JEV_MIN_CONFIDENCE, 0.70)
-  const decoded = decodeTarget(advice?.available ? advice.target?.choice : null, advice?.effort?.choice)
-  const validation = decoded ? validateModel(decoded) : { allowed: false, reason: 'missing-or-invalid-choice' }
-  const legacyTarget = typeof advice?.target?.choice === 'string' && advice.target.choice.split(':').length > 2
-  const effortConfidence = legacyTarget ? advice?.target?.confidence : advice?.effort?.confidence
-  const capabilityMet = validation.allowed && eligibleForRole(route.role, validation.entry)
-  const confidenceMet = confident(advice?.target?.confidence, minimum) && confident(effortConfidence, minimum)
-  const jevAccepted = Boolean(decoded && capabilityMet && confidenceMet)
-  const rejectionReason = validation.reason || (!capabilityMet ? 'deterministic-capability-floor' : 'insufficient-confidence')
-  const jevTarget = jevAccepted ? { role: route.role, ...decoded } : null
-  let effective = jevTarget || fallback
-  let source = jevAccepted ? 'jev' : 'deterministic-fallback'
-
-  if (advice?.available && advice.target && !jevAccepted) {
-    overrides.push({ field: 'jevTarget', requested: decoded || advice.target.choice, applied: fallback, reason: rejectionReason })
-  }
-
-  let requestedTrace = null
-  if (requested) {
-    const candidate = { ...effective, ...requested }
-    const candidateRole = candidate.role || route.role
-    const valid = validateModel(candidate)
-    const roleFloorMet = (!mandatory || rank[candidateRole] >= rank[mandatory]) && rank[candidateRole] >= rank[route.role]
-    const capabilityMet = valid.allowed && eligibleForRole(candidateRole, valid.entry)
-    const jevAuthoritative = jevAccepted && !requestedRouteAuthorized
-    const accepted = Boolean(!jevAuthoritative && roleFloorMet && capabilityMet)
-    requestedTrace = { accepted, authorized: Boolean(requestedRouteAuthorized), reason: accepted ? 'validated-authorized-host-request' : (jevAuthoritative ? 'jev-authoritative' : (valid.reason || (roleFloorMet ? 'deterministic-capability-floor' : 'deterministic-role-floor'))) }
-    if (accepted) {
-      effective = { ...candidate, role: candidateRole }
-      source = 'requested-route'
-    } else {
-      overrides.push({ field: 'requestedRoute', requested, applied: effective, reason: requestedTrace.reason })
-    }
-  }
-
-  const finalValidation = validateModel(effective)
-  if (!finalValidation.allowed) {
-    overrides.push({ field: 'target', requested: effective, applied: fallback, reason: 'verified-registry-required' })
-    effective = fallback
-    source = 'deterministic-fallback'
-  }
-
-  const execution = target => ({ ...target, configured: Boolean(target.model), executionMode: executionModeForProvider(target.provider) })
-  return {
-    recommended: execution(jevTarget || fallback),
-    effective: execution(effective),
-    trace: {
-      source,
-      fallback: execution(fallback),
-      jev: { choice: advice?.target?.choice ?? null, confidence: advice?.target?.confidence ?? null, effort: decoded?.effort ?? null, effortConfidence: effortConfidence ?? null, threshold: minimum, accepted: jevAccepted, reason: jevAccepted ? 'validated-jev-target' : rejectionReason },
-      requested: requested ? { value: requested, ...requestedTrace } : null
     }
   }
 }
@@ -212,11 +140,11 @@ export async function planTask(input, options = {}) {
   })
   if (!attempt.allowed) return withDecisionTrace({ packet: initialPacket, route: { action: attempt.action, reason: attempt.reason }, delegation: null, advice: null })
 
-  const fallback = deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length })
+  const fallback = options.review ? { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' } : deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length })
+  const mandatory = options.review ? 'reviewer' : mandatoryRole(input, initialPacket)
   let advice = null
-  if (options.useJev !== false) advice = await askRoutingJev(initialPacket, options)
-  const mandatory = mandatoryRole(input, initialPacket)
-  const worker = chooseWorker(fallback, mandatory, advice, env)
+  if (options.useJev !== false) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || 'scout' })
+  const worker = options.review ? { route: fallback, trace: { source: 'deterministic-review-policy', mandatoryFloor: 'reviewer' } } : chooseWorker(fallback, mandatory, advice, env)
   const route = worker.route
   const contextPolicy = applyAdvice(initialPacket, deterministicContext(initialPacket, route), advice, env)
   const packet = createEvidencePacket({ ...input, risk }, { contextProfile: contextPolicy.contextProfile })
@@ -260,7 +188,18 @@ export async function planTask(input, options = {}) {
     selection,
     overrides,
     handoff,
+    dispatch: target.effective.executionMode === 'external_api' ? {
+      tool: 'execute_routed_task',
+      instruction: 'Execute this server-held decision using decisionId and optional budget/deadline only. Do not reroute, substitute a native worker, or pass model/evidence overrides. The external delegate sees only the supplied packet; the parent applies and verifies any returned patch.'
+    } : null,
     parallel,
+    executionContext: {
+      workspace: String(input.workspace || '').slice(0, 1000),
+      ownerAuthorizedRetry: Boolean(input.ownerAuthorizedRetry),
+      retryReason: String(input.retryReason || '').slice(0, 500),
+      attempts: (input.attempts || []).length,
+      newEvidence: Boolean(input.newEvidence)
+    },
     planReuse: {
       routingPhaseId: input.routingPhaseId || null,
       routeOncePerPhase: true,
@@ -270,7 +209,7 @@ export async function planTask(input, options = {}) {
   return withDecisionTrace({
     packet,
     route: { ...route, ...target.effective, requested, routingDecision },
-    delegation: target.effective.role ? createDelegation(target.effective.role, packet, policy) : null,
+    delegation: target.effective.role ? createDelegation(target.effective.role, packet, policy, target.effective) : null,
     advice,
     policy,
     review,

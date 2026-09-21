@@ -31,9 +31,9 @@ test('Jev uses one batched planning request and caches on policy/registry/contex
   let calls=0,sent
   const fetchImpl=async(_url,request)=>{calls++;sent=JSON.parse(request.body);return{ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'jev',answers:{task_type:choice('implementation'),complexity:choice('medium'),risk:choice('normal'),worker:choice('engineer'),target:choice('openai:gpt-5.6-terra:high'),context_profile:choice('tight'),retrieval_mode:choice('adjacent'),expand_context:noul(0),parallel_required:noul(0),parallel_justification:choice('none'),verification:choice('integration'),review_required:noul(1)},usage:{}})}}
   const packet=createEvidencePacket({task:'unique batched plan 98127',files:['a.js']})
-  const env={TYPESAFE_API_KEY:'x',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},store=await tempStore(env),first=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'}),second=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'})
+  const env={TYPESAFE_API_KEY:'x',XAI_API_KEY:'mock',DEEPSEEK_API_KEY:'mock',KIMI_API_KEY:'mock',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01'},store=await tempStore(env),first=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'}),second=await askRoutingJev(packet,{env,store,fetchImpl,workspace:'w'})
   assert.equal(calls,1);assert.equal(second.cacheHit,true);assert.ok(sent.questions.task_type);assert.ok(sent.questions.parallel_justification);assert.ok(sent.questions.verification);assert.ok(sent.state.registry_version)
-  assert.ok(sent.questions.effort);assert.equal(Object.keys(sent.questions.target.criteria).length,8);assert.ok(sent.state.target_efforts['openai:gpt-5.6-luna'].includes('high'))
+  assert.ok(sent.questions.effort);assert.equal(Object.keys(sent.questions.native_target.criteria).length,4);assert.equal(Object.keys(sent.questions.external_target.criteria).length,4);assert.equal(Object.keys(sent.questions.execution_lane.criteria).length,2);assert.ok(sent.state.target_efforts['openai:gpt-5.6-luna'].includes('high'))
   assert.equal(sent.state.target_execution_modes['openai:gpt-5.6-terra'],'native_host');assert.equal(sent.state.target_execution_modes['xai:grok-4.6'],'external_api')
   assert.equal(first.target.choice,'openai:gpt-5.6-terra:high')
 })

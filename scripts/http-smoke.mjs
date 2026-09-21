@@ -16,5 +16,8 @@ try{
   await rpc({jsonrpc:'2.0',method:'notifications/initialized',params:{}},initialized.sessionId)
   const listed=await rpc({jsonrpc:'2.0',id:2,method:'tools/list',params:{}},initialized.sessionId);assert.ok(listed.value.result.tools.some(tool=>tool.name==='model_catalog'))
   const called=await rpc({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'model_catalog',arguments:{}}},initialized.sessionId),catalog=JSON.parse(called.value.result.content[0].text);assert.equal(catalog.models.length,8)
-  console.log(JSON.stringify({transport:'streamable-http',initialized:true,tools:listed.value.result.tools.length,catalogModels:catalog.models.length},null,2))
+  const routed=await rpc({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'route_task',arguments:{task:'HTTP smoke caller lookup',useJev:false}}},initialized.sessionId),plan=JSON.parse(routed.value.result.content[0].text)
+  const executed=await rpc({jsonrpc:'2.0',id:5,method:'tools/call',params:{name:'execute_routed_task',arguments:{decisionId:plan.routingDecision.decisionId}}},initialized.sessionId),execution=JSON.parse(executed.value.result.content[0].text)
+  assert.equal(execution.reason,'native-host-agent-required');assert.equal(execution.plan.routingDecision.decisionId,plan.routingDecision.decisionId)
+  console.log(JSON.stringify({transport:'streamable-http',initialized:true,tools:listed.value.result.tools.length,catalogModels:catalog.models.length,pinnedDecisionReused:true},null,2))
 }finally{child.kill();await Promise.race([exit,new Promise(resolve=>setTimeout(resolve,1000))])}

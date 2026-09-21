@@ -4,10 +4,10 @@ import { createTaskLedger } from '../context/taskLedger.js'
 import { nextAttemptState } from '../policy/antiLoop.js'
 import { authorizeAction } from '../policy/safety.js'
 import { createDelegation } from '../providers/registry.js'
-import { withDecisionTrace } from '../router/decisionTrace.js'
+import { planCache } from '../router/planCache.js'
 
 export async function routeTask(input, options = {}) {
-  return planTask(input, options)
+  return (options.planCache || planCache).remember(await planTask(input, options))
 }
 
 export function buildEvidencePacket(input = {}) {
@@ -36,7 +36,8 @@ export function createDelegationRequest(input = {}) {
 }
 
 export async function reviewRoute(input = {}, options = {}) {
-  const plan = await planTask({
+  return routeTask({
+    ...input,
     task: input.task || 'Review a completed engineering change',
     risk: input.risk || 'normal',
     evidence: input.evidence || [],
@@ -44,11 +45,5 @@ export async function reviewRoute(input = {}, options = {}) {
     tests: input.tests || [],
     protectedBoundaries: input.protectedBoundaries || [],
     rootCause: input.rootCause || 'implementation-complete'
-  }, { ...options, useJev: false })
-
-  return withDecisionTrace({
-    ...plan,
-    route: { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' },
-    delegation: createDelegation('reviewer', plan.packet)
-  })
+  }, { ...options, review: true })
 }

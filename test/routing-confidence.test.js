@@ -9,7 +9,7 @@ import { AccountingStore } from '../src/execution/accountingStore.js'
 const choice = (choice, confidence = .9) => ({ type: 'choice', choice, confidence })
 const noul = noul => ({ type: 'noul', noul })
 async function advised(answers, input = {}, overrides = {}) {
-  const env = { TYPESAFE_API_KEY: 'test', HARNESS_ENABLE_PAID_EXECUTION: 'true', HARNESS_JEV_CALL_COST_USD: '.01', ...overrides }
+  const env = { TYPESAFE_API_KEY: 'test', XAI_API_KEY: 'mock', HARNESS_ENABLE_PAID_EXECUTION: 'true', HARNESS_JEV_CALL_COST_USD: '.01', ...overrides }
   const store = new AccountingStore({ file: path.join(await mkdtemp(path.join(os.tmpdir(), 'routing-confidence-')), 'ledger.json'), env })
   const fetchImpl = async () => ({ ok: true, json: async () => ({ answers }) })
   return planTask({ task: 'implement bounded module', rootCause: 'known', ...input }, { env, store, fetchImpl, useCache: false })
@@ -24,8 +24,8 @@ test('separate confident model and effort choices remain authoritative', async (
   assert.equal(plan.routingDecision.selection.target.jev.effortConfidence, .74)
 })
 
-test('either low confidence decision triggers a transparent cheap fallback', async () => {
-  for (const [modelConfidence, effortConfidence] of [[.5,.9],[.9,.5],[1.1,.9],[.9,-.1]]) {
+test('low or invalid model confidence triggers a transparent cheap fallback', async () => {
+  for (const [modelConfidence, effortConfidence] of [[.5,.9],[1.1,.9]]) {
     const plan = await advised({ worker: choice('engineer'), target: choice('openai:gpt-6-astra', modelConfidence), effort: choice('high', effortConfidence) })
     assert.equal(plan.route.model, 'gpt-5.6-luna')
     assert.equal(plan.route.effort, 'medium')
@@ -34,11 +34,13 @@ test('either low confidence decision triggers a transparent cheap fallback', asy
   }
 })
 
-test('missing or unsupported effort cannot qualify a split target', async () => {
-  for (const effort of [undefined, choice('ultra')]) {
+test('uncertain, missing or unsupported effort preserves a confident model with safe default effort', async () => {
+  for (const effort of [undefined, choice('ultra'), choice('high', .5), choice('high', -.1)]) {
     const plan = await advised({ target: choice('openai:gpt-6-astra'), effort })
-    assert.equal(plan.route.model, 'gpt-5.6-luna')
-    assert.equal(plan.routingDecision.selection.target.jev.accepted, false)
+    assert.equal(plan.route.model, 'gpt-6-astra')
+    assert.equal(plan.route.effort, 'medium')
+    assert.equal(plan.routingDecision.selection.target.jev.accepted, true)
+    assert.equal(plan.routingDecision.selection.target.jev.effortAccepted, false)
   }
 })
 

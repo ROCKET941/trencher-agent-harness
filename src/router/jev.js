@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { listModels, REGISTRY_VERSION } from '../providers/catalog.js'
+import { listModels, eligibleForRole, resolveProviderKey, REGISTRY_VERSION } from '../providers/catalog.js'
 import routing from '../../config/routing.json' with {type:'json'}
 import { getAccountingStore } from '../execution/executor.js'
 import { taskIdentityFromContext, digestValue } from '../execution/taskIdentity.js'
@@ -18,10 +18,14 @@ export function jevAvailability(env=process.env){
   return{available:true,callCostUsd}
 }
 export const normalizeChoice = answer => answer?.type === 'choice'
-  ? { choice: answer.choice, probabilities: answer.probabilities || {}, confidence: number(answer.confidence, 0) } : null
+  ? { choice: answer.choice, probabilities: answer.probabilities || {}, confidence: typeof answer.confidence === 'number' && Number.isFinite(answer.confidence) ? answer.confidence : 0 } : null
 export const normalizeNoul = answer => answer?.type === 'noul' ? { probability: number(answer.noul, 0) } : null
 export const normalizeContextProfile = answer => { const value = normalizeChoice(answer); return value && CONTEXT_PROFILES.has(value.choice) ? value : null }
 export const normalizeRetrievalMode = answer => { const value = normalizeChoice(answer); return value && RETRIEVAL_MODES.has(value.choice) ? value : null }
+export const normalizeExecutionLane = answer => { const value = normalizeChoice(answer); return value && ['native_host', 'external_api'].includes(value.choice) ? value : null }
+export function routingModels(env = process.env, role = 'scout') {
+  return listModels().filter(model => eligibleForRole(role, model) && (model.executionMode === 'native_host' || (env.HARNESS_ENABLE_PAID_EXECUTION === 'true' && Boolean(resolveProviderKey(model.provider, env).key))))
+}
 function delay(response, attempt) { const seconds = Number(response.headers?.get?.('retry-after')); return Math.min(MAX_RETRY_DELAY_MS,Number.isFinite(seconds)&&seconds>=0?seconds*1000:250*(2**attempt)) }
 
 export async function askJev({ state, questions }, options = {}) {
@@ -58,17 +62,26 @@ export async function askJev({ state, questions }, options = {}) {
 export async function askRoutingJev(packet, options = {}) {
   const availability=jevAvailability(options.env||process.env)
   if(!availability.available)return availability
-  const eligibleModels=options.eligibleModels||listModels(),eligible=eligibleModels.map(model=>`${model.provider}:${model.id}`),targetExecutionModes=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.executionMode])),targetEfforts=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.efforts]))
-  const state={task:packet.task,risk:packet.risk,root_cause_known:Boolean(packet.rootCause),evidence:packet.evidence,files:packet.files,open_questions:packet.openQuestions,facts:packet.facts,inspected:packet.inspected,eligible_targets:eligible,target_efforts:targetEfforts,target_execution_modes:targetExecutionModes,registry_version:REGISTRY_VERSION,policy_version:routing.version}
-  const cacheKey=createHash('sha256').update(JSON.stringify(state)).digest('hex')
+  const availableModels=routingModels(options.env||process.env,options.roleFloor||'scout')
+  const eligibleModels=availableModels.filter(model=>!options.eligibleModels||options.eligibleModels.some(candidate=>candidate.provider===model.provider&&candidate.id===model.id)),eligible=eligibleModels.map(model=>`${model.provider}:${model.id}`),targetExecutionModes=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.executionMode])),targetEfforts=Object.fromEntries(eligibleModels.map(model=>[`${model.provider}:${model.id}`,model.efforts]))
+  const roles=['scout','engineer','deep_debugger','reviewer','exceptional']
+  const criteriaFor=mode=>Object.fromEntries(eligibleModels.filter(model=>model.executionMode===mode).map(model=>[`${model.provider}:${model.id}`,`${model.id}; capable roles: ${roles.filter(role=>eligibleForRole(role,model)).join(', ')}; ${mode==='native_host'?'ChatGPT plan usage':`API USD/M input ${model.inputPerMTok}, output ${model.outputPerMTok}`}`]))
+  const nativeCriteria=criteriaFor('native_host'),externalCriteria=criteriaFor('external_api')
+  const state={task:packet.task,risk:packet.risk,root_cause_known:Boolean(packet.rootCause),root_cause:packet.rootCause,evidence:packet.evidence,files:packet.files,tests:packet.tests,docs:packet.docs,open_questions:packet.openQuestions,facts:packet.facts,inspected:packet.inspected,required_role:options.roleFloor||null,eligible_targets:eligible,target_efforts:targetEfforts,target_execution_modes:targetExecutionModes,registry_version:REGISTRY_VERSION,policy_version:routing.version}
+  const questions = {
+    execution_lane: {type:'choice',instructions:'Choose the appropriate execution environment independently of model and effort. Native workers can inspect/edit the local repository and run tests. External API workers receive ONLY supplied bounded evidence, can return analysis or a patch for the parent to apply, and cannot read files or execute tools; file paths alone are not source content. Prefer external_api for self-contained analysis, review or patch work when the evidence is sufficient and external candidates exist. Prefer native_host when direct workspace access is essential. Do not force provider diversity or prefer a lane merely because it has more candidates.',criteria:{native_host:'Native ChatGPT plan worker with host workspace tools.',...(Object.keys(externalCriteria).length?{external_api:'Configured paid API worker for bounded supplied-content work.'}:{})}},
+    native_target: {type:'choice',instructions:'Independently, IF a native worker is used, choose the cheapest capable native model for this task. Do not depend on another answer.',criteria:nativeCriteria},
+    ...(Object.keys(externalCriteria).length?{external_target:{type:'choice',instructions:'Independently, IF an external worker is used, choose the cheapest capable external model for this task from the supplied candidates. Consider judgment, context and task difficulty as well as price. Do not depend on another answer.',criteria:externalCriteria}}:{}),
+    effort: {type:'choice',instructions:'Independently estimate the smallest sufficient reasoning depth for this TASK. Do not condition on any other answer; code maps this level to a supported effort on the chosen model.',criteria:{low:'Simple localized analysis or mechanical change.',medium:'Ordinary bounded engineering or review.',high:'Difficult causal analysis or consequential correctness.',xhigh:'Very difficult cross-cutting reasoning.',max:'Exceptional reasoning depth is necessary.'}},
+  }
+  const cacheKey=createHash('sha256').update(JSON.stringify({state,questions})).digest('hex')
   if(options.useCache!==false&&cache.has(cacheKey))return{...structuredClone(cache.get(cacheKey)),cacheHit:true}
   const result = await askJev({ state, questions: {
+    ...questions,
     task_type: {type:'choice',instructions:'Classify the primary task.',criteria:{retrieval:'Exact search or repository mapping.',implementation:'Bounded code change.',debugging:'Causal diagnosis.',review:'Independent verification.'}},
     complexity: {type:'choice',instructions:'Estimate size separately from risk.',criteria:{low:'Localized and mechanical.',medium:'Several related surfaces.',high:'Cross-cutting architecture or ambiguity.'}},
     risk: {type:'choice',instructions:'Assess consequence and trust boundaries separately from task size. Exact caller search is not high risk merely because a symbol contains a safety word.',criteria:{low:'Read-only or trivial.',normal:'Ordinary bounded engineering.',high:'Funds, auth, secrets, concurrency, production, or irreversible behavior.'}},
     worker: { type: 'choice', instructions: 'Choose the cheapest capable worker. Never downgrade high-risk unknown-root-cause work.', criteria: { scout: 'Repository search and reconnaissance only.', engineer: 'Bounded implementation with an established causal path.', deep_debugger: 'Ambiguous high-risk root cause, financial correctness, concurrency, distributed state or execution.' } },
-    target: {type:'choice',instructions:'Choose exactly one provider:model from eligible_targets in state, separately from effort. Prefer the cheapest capable model. OpenAI targets are native host agents using ChatGPT plan usage; xAI, DeepSeek, and Kimi targets are external API delegates. Never invent a model.',criteria:Object.fromEntries(eligible.map(value=>[value,value]))},
-    effort: {type:'choice',instructions:'Choose the smallest sufficient reasoning effort supported by the selected target in target_efforts. Assess confidence in effort separately from provider/model.',criteria:Object.fromEntries([...new Set(eligibleModels.flatMap(model=>model.efforts))].map(value=>[value,value]))},
     context_profile: { type: 'choice', instructions: 'Choose the smallest sufficient bounded context. Expanded requires concrete missing evidence, ambiguity, or high risk.', criteria: { tight: 'Localized work with strong symbol, file, or exact-search evidence.', normal: 'Ordinary bounded engineering using direct dependencies.', expanded: 'Current evidence is insufficient for genuinely ambiguous or high-risk work.' } },
     retrieval_mode: { type: 'choice', instructions: 'Choose the narrowest sufficient repository retrieval scope. Exploratory is exceptional.', criteria: { exact: 'Known symbols, exact hits, named files, and relevant excerpts only.', adjacent: 'Direct callers, callees, imports, and dependencies around known evidence.', exploratory: 'Broader investigation because root cause or context is genuinely unknown.' } },
     expand_context: { type: 'noul', instructions: 'Is more repository context required?', criteria: { true: 'More evidence is necessary.', false: 'Current evidence is sufficient.' } },
@@ -78,7 +91,8 @@ export async function askRoutingJev(packet, options = {}) {
     review_required: { type: 'noul', instructions: 'Should this change receive an independent bounded review?', criteria: { true: 'Meaningful normal/high-risk change.', false: 'Trivial low-risk work.' } }
   } }, {...options,taskContext:{task:packet.task,rootCause:packet.rootCause}})
   if(!result.available)return result
-  const normalized={...result,cacheKey,cacheHit:false,taskType:normalizeChoice(result.answers.task_type),complexity:normalizeChoice(result.answers.complexity),riskAdvice:normalizeChoice(result.answers.risk),worker:normalizeChoice(result.answers.worker),target:normalizeChoice(result.answers.target),effort:normalizeChoice(result.answers.effort),contextProfile:normalizeContextProfile(result.answers.context_profile),retrievalMode:normalizeRetrievalMode(result.answers.retrieval_mode),expandContext:normalizeNoul(result.answers.expand_context),parallelRequired:normalizeNoul(result.answers.parallel_required),parallelJustification:normalizeChoice(result.answers.parallel_justification),verification:normalizeChoice(result.answers.verification),reviewRequired:normalizeNoul(result.answers.review_required)}
+  const executionLane=normalizeExecutionLane(result.answers.execution_lane),nativeTarget=normalizeChoice(result.answers.native_target),externalTarget=normalizeChoice(result.answers.external_target)
+  const normalized={...result,cacheKey,cacheHit:false,executionLane,nativeTarget,externalTarget,laneAdvicePresent:Object.hasOwn(result.answers,'execution_lane'),taskType:normalizeChoice(result.answers.task_type),complexity:normalizeChoice(result.answers.complexity),riskAdvice:normalizeChoice(result.answers.risk),worker:normalizeChoice(result.answers.worker),target:executionLane?(executionLane.choice==='native_host'?nativeTarget:externalTarget):normalizeChoice(result.answers.target),effort:normalizeChoice(result.answers.effort),contextProfile:normalizeContextProfile(result.answers.context_profile),retrievalMode:normalizeRetrievalMode(result.answers.retrieval_mode),expandContext:normalizeNoul(result.answers.expand_context),parallelRequired:normalizeNoul(result.answers.parallel_required),parallelJustification:normalizeChoice(result.answers.parallel_justification),verification:normalizeChoice(result.answers.verification),reviewRequired:normalizeNoul(result.answers.review_required)}
   if(options.useCache!==false)cache.set(cacheKey,structuredClone(normalized))
   return normalized
 }
