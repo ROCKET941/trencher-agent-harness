@@ -7,13 +7,13 @@ import {KimiProvider} from '../src/providers/kimi.js'
 import {getProviderStatus} from '../src/providers/status.js'
 import {listModels,validateModel} from '../src/providers/catalog.js'
 
-const query={role:'engineer',model:'gpt-5.6-terra',effort:'high',task:'bounded',context:{files:['src/a.js']},instruction:'work',budget:{maxOutputTokens:25}}
+const query={role:'engineer',model:'gpt-6-astra',effort:'xhigh',task:'bounded',context:{files:['src/a.js']},instruction:'work',budget:{maxOutputTokens:25}}
 const response=value=>({ok:true,status:200,json:async()=>value})
 
 test('verified catalog separates native host models from priced API delegates',()=>{
-  assert.equal(listModels().length,8)
+  assert.equal(listModels().length,6)
   assert.equal(validateModel({provider:'deepseek',model:'deepseek-flash',effort:'medium'}).allowed,false)
-  assert.equal(validateModel({provider:'openai',model:'gpt-5.6-sol',effort:'max'}).allowed,true)
+  assert.equal(validateModel({provider:'openai',model:'gpt-6-astra',effort:'xhigh'}).allowed,true)
   assert.ok(listModels().every(model=>model.verifiedAt==='2026-09-20'&&model.source.startsWith('https://')))
   assert.ok(listModels({provider:'openai'}).every(model=>model.executionMode==='native_host'&&model.inputPerMTok===null&&model.outputPerMTok===null))
   assert.ok(listModels({provider:'xai'}).every(model=>model.executionMode==='external_api'))
@@ -25,7 +25,7 @@ test('OpenAI Responses request and response contract',async()=>{
   const result=await adapter.execute(query)
   const body=JSON.parse(request.body)
   assert.equal(url,'https://openai.test/v1/responses');assert.equal(request.headers.authorization,'Bearer secret')
-  assert.equal(body.reasoning.effort,'high');assert.equal(body.max_output_tokens,25);assert.ok(body.tools.some(tool=>tool.name==='request_context'))
+  assert.equal(body.reasoning.effort,'xhigh');assert.equal(body.max_output_tokens,25);assert.ok(body.tools.some(tool=>tool.name==='request_context'))
   assert.equal(result.output,'ok');assert.equal(result.usage.totalTokens,5)
 })
 

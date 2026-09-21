@@ -19,6 +19,7 @@ export function withDecisionTrace(plan) {
     effective: decision.effective || null, selection: decision.selection || null,
     overrides: decision.overrides || [], parallel: decision.parallel || null,
     executionContext: decision.executionContext || null,
+    reviewContext: decision.reviewContext || null,
     routingPhaseId: decision.planReuse?.routingPhaseId || null
   })
   const routingDecision = { ...decision, decisionId: `route_${payloadDigest.slice(0, 32)}`, payloadDigest, evidenceDigest }

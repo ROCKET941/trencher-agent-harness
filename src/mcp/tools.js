@@ -5,6 +5,7 @@ import { nextAttemptState } from '../policy/antiLoop.js'
 import { authorizeAction } from '../policy/safety.js'
 import { createDelegation } from '../providers/registry.js'
 import { planCache } from '../router/planCache.js'
+import { checkCommit } from '../policy/commitGate.js'
 
 export async function routeTask(input, options = {}) {
   return (options.planCache || planCache).remember(await planTask(input, options))
@@ -24,7 +25,8 @@ export function checkContinue(input = {}) {
   })
 }
 
-export function checkAction(input = {}) {
+export function checkAction(input = {}, options = {}) {
+  if(['commit','git_commit'].includes(String(input.action||'')))return checkCommit(input.commit,(options.planCache||planCache).get(input.commit?.reviewDecisionId))
   return authorizeAction(String(input.action || ''), {
     explicitlyAuthorized: Boolean(input.explicitlyAuthorized)
   })

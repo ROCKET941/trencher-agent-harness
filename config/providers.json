@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-20.2",
+  "version": "2026-09-21.1",
   "providers": {
     "openai": { "executionMode": "native_host", "keyEnv": ["OPENAI_API_KEY"], "baseUrlEnv": "OPENAI_BASE_URL", "defaultBaseUrl": "https://api.openai.com", "catalogPath": "/v1/models" },
     "xai": { "executionMode": "external_api", "keyEnv": ["XAI_API_KEY"], "baseUrlEnv": "XAI_BASE_URL", "defaultBaseUrl": "https://api.x.ai", "catalogPath": "/v1/models" },
@@ -7,10 +7,10 @@
     "kimi": { "executionMode": "external_api", "keyEnv": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "baseUrlEnv": "KIMI_BASE_URL", "defaultBaseUrl": "https://api.moonshot.ai", "catalogPath": "/v1/models" }
   },
   "roles": {
-    "scout": { "provider": "openai", "model": "gpt-5.6-luna", "effort": "medium" },
-    "engineer": { "provider": "openai", "model": "gpt-5.6-luna", "effort": "medium" },
-    "deep_debugger": { "provider": "openai", "model": "gpt-5.6-sol", "effort": "high" },
-    "reviewer": { "provider": "openai", "model": "gpt-5.6-sol", "effort": "medium" },
+    "scout": { "provider": "openai", "model": "gpt-5.6-luna", "effort": "max" },
+    "engineer": { "provider": "openai", "model": "gpt-6-astra", "effort": "xhigh" },
+    "deep_debugger": { "provider": "openai", "model": "gpt-6-astra", "effort": "xhigh" },
+    "reviewer": { "provider": "openai", "model": "gpt-6-astra", "effort": "xhigh" },
     "exceptional": { "provider": "openai", "model": "gpt-6-astra", "effort": "xhigh" }
   }
 }

@@ -24,11 +24,11 @@ test('separate confident model and effort choices remain authoritative', async (
   assert.equal(plan.routingDecision.selection.target.jev.effortConfidence, .74)
 })
 
-test('low or invalid model confidence triggers a transparent cheap fallback', async () => {
+test('low or invalid model confidence triggers a transparent Astra fallback', async () => {
   for (const [modelConfidence, effortConfidence] of [[.5,.9],[1.1,.9]]) {
     const plan = await advised({ worker: choice('engineer'), target: choice('openai:gpt-6-astra', modelConfidence), effort: choice('high', effortConfidence) })
-    assert.equal(plan.route.model, 'gpt-5.6-luna')
-    assert.equal(plan.route.effort, 'medium')
+    assert.equal(plan.route.model, 'gpt-6-astra')
+    assert.equal(plan.route.effort, 'xhigh')
     assert.equal(plan.routingDecision.selection.target.jev.reason, 'insufficient-confidence')
     assert.equal(plan.routingDecision.selection.target.jev.threshold, .70)
   }
@@ -38,7 +38,7 @@ test('uncertain, missing or unsupported effort preserves a confident model with 
   for (const effort of [undefined, choice('ultra'), choice('high', .5), choice('high', -.1)]) {
     const plan = await advised({ target: choice('openai:gpt-6-astra'), effort })
     assert.equal(plan.route.model, 'gpt-6-astra')
-    assert.equal(plan.route.effort, 'medium')
+    assert.equal(plan.route.effort, 'xhigh')
     assert.equal(plan.routingDecision.selection.target.jev.accepted, true)
     assert.equal(plan.routingDecision.selection.target.jev.effortAccepted, false)
   }
@@ -48,9 +48,9 @@ test('high risk retrieval and invalid environment targets cannot bypass capabili
   for (const model of ['gpt-5.6-luna', 'invented-model']) {
     const plan = await advised({ worker: choice('scout'), target: choice('openai:gpt-5.6-luna'), effort: choice('medium') }, { task: 'find the cause of wallet settlement corruption', risk: 'high', rootCause: null }, { HARNESS_DEBUG_MODEL: model })
     assert.equal(plan.route.role, 'deep_debugger')
-    assert.equal(plan.route.model, 'gpt-5.6-sol')
+    assert.equal(plan.route.model, 'gpt-6-astra')
     assert.equal(plan.review.required, true)
-    assert.ok(plan.routingDecision.overrides.some(override => override.field === 'configuredTarget'))
+    assert.equal(plan.commander.model, 'gpt-6-astra')
   }
 })
 

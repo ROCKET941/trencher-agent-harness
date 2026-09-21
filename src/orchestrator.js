@@ -7,6 +7,8 @@ import { createDelegation } from './providers/registry.js'
 import { chooseTarget } from './router/targetSelection.js'
 import { withDecisionTrace } from './router/decisionTrace.js'
 import path from 'node:path'
+import { COMMANDER, taskKind, reviewPolicy } from './policy/quality.js'
+import { ARTIFACT_DIGEST, requiredVerification } from './policy/commitGate.js'
 
 const rank = { scout: 0, engineer: 1, deep_debugger: 2, reviewer: 2, exceptional: 3 }
 const workerRoles = new Set(['scout', 'engineer', 'deep_debugger', 'exceptional'])
@@ -54,11 +56,11 @@ function mandatoryRole(input, packet) {
   return null
 }
 
-function chooseWorker(fallback, mandatory, advice, env) {
+function chooseWorker(fallback, mandatory, advice, env, kind) {
   const minimum = threshold(env.JEV_MIN_CONFIDENCE, 0.70)
   const jevChoice = advice?.available ? advice.worker?.choice : null
   const valid = workerRoles.has(jevChoice)
-  const floorMet = !mandatory || (valid && rank[jevChoice] >= rank[mandatory])
+  const floorMet = (!mandatory || (valid && rank[jevChoice] >= rank[mandatory])) && (kind==='research'||jevChoice!=='scout')
   const accepted = Boolean(valid && floorMet && confident(advice?.worker?.confidence, minimum))
   return {
     route: accepted ? { role: jevChoice, action: 'delegate', reason: 'jev' } : fallback,
@@ -87,6 +89,7 @@ function normalizeWorkstreams(input, risk = 'normal') {
     return{
       id: String(value?.id || `workstream-${index + 1}`).slice(0, 80),
       task: bounded.task,
+      taskKind: taskKind({...bounded,files:value?.files||[]},value?.taskKind),
       risk: workstreamRisk,
       rootCause: bounded.rootCause,
       evidence: bounded.evidence,
@@ -151,9 +154,13 @@ const dispatchFor = target => target.executionMode === 'external_api' ? {
 function handoffFor(target, { strategy = 'single', maxAgents = 1 } = {}) {
   if (target.executionMode !== 'native_host') return null
   return {
-    required: true, mode: 'native_host', scope: 'subagent-only', parentModelUnchanged: true, billingSource: 'chatgpt_plan',
+    required: true, mode: 'native_host', scope: target.role==='reviewer'?'fresh-final-reviewer':target.model==='gpt-6-astra'?'commander':'subagent-only', parentModelUnchanged: true, billingSource: 'chatgpt_plan',
+    readOnly:target.role==='reviewer'||target.role==='scout', fresh:target.role==='reviewer',
     role: target.role, provider: target.provider, model: target.model, effort: target.effort,
-    orchestration: { strategy, maxAgents, routeOncePerPhase: true, instruction: strategy === 'single'
+    orchestration: { strategy:target.role==='reviewer'||target.role==='scout'?'single':target.model==='gpt-6-astra'?'commander':strategy, maxAgents:target.role==='scout'||target.model==='gpt-6-astra'?1:maxAgents, routeOncePerPhase: true, instruction: target.role==='reviewer'
+      ? 'Spawn exactly one fresh read-only native Astra XHigh final reviewer for the complete integrated diff after verification. Return acceptance or blocking findings; never edit or commit.'
+      : target.role==='scout' ? 'Spawn one bounded Luna Max read-only researcher. It may read, trace and report concise findings; it must not edit, implement, review final work, approve changes or commit.'
+      : target.model==='gpt-6-astra' ? 'The permanent native Astra XHigh commander owns this implementation/integration work. Keep the parent model unchanged and do not spawn another coding commander. Astra applies candidate patches, verifies, obtains final acceptance, and checks the commit gate.' : strategy === 'single'
       ? 'Spawn one bounded native Codex subagent when delegation is useful. Keep the parent model unchanged; the parent integrates and verifies.'
       : `Spawn up to ${maxAgents} native Codex subagents concurrently for independent, non-overlapping workstreams. Keep the parent model unchanged; the parent integrates and verifies.` }
   }
@@ -185,7 +192,10 @@ export async function planTask(input, options = {}) {
   const classifiedRisk = classifyRisk(input.task).risk
   const risk = input.risk === 'high' || classifiedRisk === 'high' ? 'high' : (input.risk || classifiedRisk)
   const initialPacket = createEvidencePacket({ ...input, risk }, { contextProfile: 'normal' })
-  const normalizedWorkstreams = normalizeWorkstreams(input, risk)
+  const kind=options.review?'review':taskKind(initialPacket,input.taskKind)
+  const normalizedWorkstreams = normalizeWorkstreams(options.review?{}:input, risk)
+  const hasImplementationWorkstream=normalizedWorkstreams.workstreams.some(value=>value.taskKind!=='research')
+  const implementationRequired=!options.review&&(kind!=='research'||hasImplementationWorkstream)
   const attempt = nextAttemptState({
     attempts: input.attempts || [],
     newEvidence: Boolean(input.newEvidence),
@@ -194,27 +204,24 @@ export async function planTask(input, options = {}) {
   })
   if (!attempt.allowed) return withDecisionTrace({ packet: initialPacket, route: { action: attempt.action, reason: attempt.reason }, delegation: null, advice: null })
 
-  const fallback = options.review ? { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' } : deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length })
+  const fallback = options.review ? { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' } : deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length, taskKind:kind })
   const mandatory = options.review ? 'reviewer' : mandatoryRole(input, initialPacket)
   let advice = null
   const jevWorkstreams=normalizedWorkstreams.nonOverlapping&&normalizedWorkstreams.workstreams.length>1?normalizedWorkstreams.workstreams:[]
-  if (options.useJev !== false) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || 'scout', workstreams:jevWorkstreams })
-  const worker = options.review ? { route: fallback, trace: { source: 'deterministic-review-policy', mandatoryFloor: 'reviewer' } } : chooseWorker(fallback, mandatory, advice, env)
+  if (options.useJev !== false && !options.review) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || fallback.role, taskKind:kind, workstreams:jevWorkstreams })
+  const worker = options.review ? { route: fallback, trace: { source: 'deterministic-review-policy', mandatoryFloor: 'reviewer' } } : chooseWorker(fallback, mandatory, advice, env,kind)
   const route = worker.route
   const contextPolicy = applyAdvice(initialPacket, deterministicContext(initialPacket, route), advice, env)
   const packet = createEvidencePacket({ ...input, risk }, { contextProfile: contextPolicy.contextProfile })
+  const reviewContext=options.review && ARTIFACT_DIGEST.test(input.reviewContext?.artifactDigest||'') && typeof input.reviewContext?.commanderAgentId==='string' && input.reviewContext.commanderAgentId.trim()
+    ? {artifactDigest:input.reviewContext.artifactDigest,commanderAgentId:input.reviewContext.commanderAgentId.slice(0,120),requiredChecks:requiredVerification()} : null
+  if(reviewContext)packet.reviewContext=reviewContext
   const reviewProbability = advice?.reviewRequired?.probability ?? 0
-  const reviewThreshold = number(env.JEV_REVIEW_THRESHOLD, 0.70)
-  const review = {
-    required: risk === 'high',
-    recommended: risk === 'high' || reviewProbability >= reviewThreshold,
-    reason: risk === 'high' ? 'deterministic-high-risk-policy' : (reviewProbability >= reviewThreshold ? 'jev' : 'not-required'),
-    probability: reviewProbability
-  }
-  const policy = { ...contextPolicy, review }
+  const review = options.review?{...reviewPolicy('research','normal'),reason:'final-review-in-progress',required:false,recommended:false}:reviewPolicy(implementationRequired?'implementation':kind,risk,reviewProbability)
+  const policy = { ...contextPolicy, taskKind:kind, review, commander:{...COMMANDER}, commitGate:{required:implementationRequired,tool:'check_action',action:'commit',evidenceSource:'host-attested'} }
   const requested = input.requestedRoute || null
   const overrides = []
-  const target = chooseTarget(route, requested, Boolean(input.requestedRouteAuthorized), advice, env, mandatory, overrides)
+  const target = chooseTarget(route, requested, Boolean(input.requestedRouteAuthorized), advice, env, mandatory, overrides,{...packet,taskKind:kind})
   const parallel = parallelPlan(input, advice, env, normalizedWorkstreams)
   const phaseExecutionContext=executionContext(input)
   const workstreamPlans=[]
@@ -223,18 +230,15 @@ export async function planTask(input, options = {}) {
     for(const [index,workstream] of parallel.workstreams.entries()){
       const scopedAdvice=scopedWorkstreamAdvice(advice,index,expectedIds),workstreamOverrides=[]
       const workstreamInitialPacket=workstreamPacket(workstream,input,'normal')
-      const workstreamFallback=deterministicRoute({task:workstream.task,risk:workstream.risk,rootCause:workstream.rootCause,attempts:(input.attempts||[]).length})
+      const workstreamFallback=deterministicRoute({task:workstream.task,risk:workstream.risk,rootCause:workstream.rootCause,attempts:(input.attempts||[]).length,taskKind:workstream.taskKind})
       const workstreamMandatory=mandatoryRole(input,workstreamInitialPacket)
-      const workstreamRoute=strongestRoute(route,workstreamFallback,workstreamMandatory?{role:workstreamMandatory,action:'delegate',reason:'deterministic-workstream-floor'}:null)
+      const workstreamRoute=strongestRoute(workstreamFallback,workstreamMandatory?{role:workstreamMandatory,action:'delegate',reason:'deterministic-workstream-floor'}:null)
       const workstreamContextPolicy=applyAdvice(workstreamInitialPacket,deterministicContext(workstreamInitialPacket,workstreamRoute),scopedAdvice,env)
       const workstreamEvidence=workstreamPacket(workstream,input,workstreamContextPolicy.contextProfile)
       const workstreamReviewProbability=scopedAdvice?.reviewRequired?.probability??0
-      const workstreamReview={
-        required:workstream.risk==='high',recommended:workstream.risk==='high'||workstreamReviewProbability>=reviewThreshold,
-        reason:workstream.risk==='high'?'deterministic-high-risk-policy':(workstreamReviewProbability>=reviewThreshold?'jev':'not-required'),probability:workstreamReviewProbability
-      }
-      const workstreamPolicy={...workstreamContextPolicy,review:workstreamReview}
-      const workstreamTarget=chooseTarget(workstreamRoute,requested,Boolean(input.requestedRouteAuthorized),scopedAdvice,env,workstreamMandatory,workstreamOverrides)
+      const workstreamReview=reviewPolicy(workstream.taskKind,workstream.risk,workstreamReviewProbability)
+      const workstreamPolicy={...workstreamContextPolicy,taskKind:workstream.taskKind,review:workstreamReview,commander:{...COMMANDER},commitGate:{...policy.commitGate,required:workstream.taskKind!=='research'}}
+      const workstreamTarget=chooseTarget(workstreamRoute,requested,Boolean(input.requestedRouteAuthorized),scopedAdvice,env,workstreamMandatory,workstreamOverrides,{...workstreamEvidence,taskKind:workstream.taskKind})
       const workstreamWorkerTrace=workstreamRoute.role===route.role?worker.trace:{source:'deterministic-workstream-floor',fallback:route.role,mandatoryFloor:workstreamMandatory,applied:workstreamRoute.role}
       const workstreamDecision={
         requested,recommended:workstreamTarget.recommended,effective:workstreamTarget.effective,
@@ -246,7 +250,7 @@ export async function planTask(input, options = {}) {
       workstreamPlans.push(withDecisionTrace({
         packet:workstreamEvidence,route:{...workstreamRoute,...workstreamTarget.effective,requested,routingDecision:workstreamDecision},
         delegation:createDelegation(workstreamTarget.effective.role,workstreamEvidence,workstreamPolicy,workstreamTarget.effective),
-        advice:scopedAdvice,policy:workstreamPolicy,review:workstreamReview,routingDecision:workstreamDecision,commander:{mode:'host',apiCommander:false}
+        advice:scopedAdvice,policy:workstreamPolicy,review:workstreamReview,routingDecision:workstreamDecision,commander:{...COMMANDER}
       }))
     }
   }
@@ -262,7 +266,7 @@ export async function planTask(input, options = {}) {
     required:true,mode:modes.size>1?'mixed':modes.values().next().value,scope:'workstream-assignments',parentModelUnchanged:true,
     billingSource:modes.size>1?'mixed':(modes.has('native_host')?'chatgpt_plan':'external_api'),
     orchestration:{strategy:'heterogeneous-non-overlapping',maxAgents:parallel.effective,routeOncePerPhase:true,
-      instruction:'Use each workstream assignment exactly once. Spawn native assignments with their selected model; execute external assignments by decisionId. Run at most maxAgents concurrently. The parent integrates and verifies all results.'}
+      instruction:'Use each workstream assignment exactly once. Spawn Luna Max research assignments; keep Astra implementation assignments in the commander; execute external assignments by decisionId. Run at most maxAgents concurrently. Astra integrates and verifies all results, then obtains exactly one fresh Astra XHigh review of the complete integrated diff.'}
   } : handoffFor(target.effective,{strategy:parallel.effective>1?'parallel-non-overlapping':'single',maxAgents:parallel.effective})
   const selection = { worker: worker.trace, target: target.trace }
   const routingDecision = {
@@ -275,6 +279,7 @@ export async function planTask(input, options = {}) {
     dispatch: hasAssignments ? (modes.has('external_api') ? {tool:'execute_routed_task',perWorkstream:true,instruction:'Execute only external workstream assignment decisionIds. Native assignments are host subagent handoffs. Do not reroute or substitute targets.'} : null) : dispatchFor(target.effective),
     parallel,
     executionContext: phaseExecutionContext,
+    reviewContext,
     planReuse: {
       routingPhaseId: input.routingPhaseId || null,
       routeOncePerPhase: true,
@@ -289,7 +294,7 @@ export async function planTask(input, options = {}) {
     policy,
     review,
     routingDecision,
-    commander: { mode: 'host', apiCommander: false },
+    commander: { ...COMMANDER },
     _workstreamPlans: workstreamPlans
   })
 }

@@ -1,7 +1,8 @@
-import { getModel, validateModel, eligibleForRole } from '../providers/catalog.js'
+import { getModel, validateModel, eligibleForRole, modelCapability } from '../providers/catalog.js'
 import { resolveRoleTarget } from '../execution/roleResolver.js'
 import { executionModeForProvider } from '../policy/providerExecution.js'
 import { routingModels } from './jev.js'
+import { allowsFlash } from '../policy/quality.js'
 
 const rank = { scout: 0, engineer: 1, deep_debugger: 2, reviewer: 2, exceptional: 3 }
 const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -18,17 +19,18 @@ const decode = choice => {
 // Map an independent task-depth answer upward to a supported effort, never below
 // the role floor. Effort uncertainty must not discard a sound lane/model choice.
 function supportedEffort(model, role, desired) {
+  if(model.provider==='openai')return model.id==='gpt-5.6-luna'?'max':'xhigh'
   const minimum = Math.max(efforts.indexOf(floor[role]), efforts.indexOf(desired))
   return efforts.find((effort, index) => index >= minimum && model.efforts.includes(effort)) || model.efforts.at(-1)
 }
 
-export function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, mandatory, overrides) {
+export function chooseTarget(route, requested, requestedRouteAuthorized, advice, env, mandatory, overrides, context = {}) {
   const minimum = threshold(env.JEV_MIN_CONFIDENCE), laneMinimum = threshold(env.JEV_LANE_MIN_CONFIDENCE)
   const configured = resolveRoleTarget(route.role, env), validation = validateModel(configured)
   const configuredAllowed = validation.allowed && eligibleForRole(route.role, validation.entry)
   let fallback = { role: route.role, ...(configuredAllowed ? configured : resolveRoleTarget(route.role, {})) }
   if (!configuredAllowed) overrides.push({ field: 'configuredTarget', requested: configured, applied: fallback, reason: validation.reason || 'deterministic-capability-floor' })
-  const models = routingModels(env, route.role)
+  const models = routingModels(env, route.role, context)
   if (!models.some(model => key(model) === `${fallback.provider}:${fallback.model}`)) {
     const unavailable = fallback
     fallback = { role: route.role, ...resolveRoleTarget(route.role, {}) }
@@ -43,8 +45,8 @@ export function chooseTarget(route, requested, requestedRouteAuthorized, advice,
   const lane = laneAccepted ? laneAdvice.choice : executionModeForProvider(fallback.provider)
   let laneFallback = fallback
   if (lane !== executionModeForProvider(fallback.provider)) {
-    const entry = models.filter(model => model.executionMode === lane).sort((a, b) => (a.inputPerMTok + a.outputPerMTok) - (b.inputPerMTok + b.outputPerMTok))[0]
-    laneFallback = { role: route.role, provider: entry.provider, model: entry.id, effort: supportedEffort(entry, route.role, resolveRoleTarget(route.role, {}).effort) }
+    const entry = models.filter(model => model.executionMode === lane).sort((a, b) => modelCapability(b)-modelCapability(a) || (a.inputPerMTok + a.outputPerMTok) - (b.inputPerMTok + b.outputPerMTok))[0]
+    laneFallback = { role: route.role, provider: entry.provider, model: entry.id, effort: supportedEffort(entry, route.role, 'high') }
   }
   const targetAdvice = advice?.available ? (modern ? (lane === 'native_host' ? advice.nativeTarget : advice.externalTarget) : advice.target) : null
   const decoded = decode(targetAdvice?.choice), entry = decoded ? getModel(decoded.provider, decoded.model) : null
@@ -57,7 +59,7 @@ export function chooseTarget(route, requested, requestedRouteAuthorized, advice,
   const effortChoice = (accepted && decoded?.effort) || advice?.effort?.choice
   const effortConfidence = accepted && decoded?.effort ? targetAdvice?.confidence : advice?.effort?.confidence
   const effortAccepted = Boolean((accepted || laneAccepted) && efforts.includes(effortChoice) && confident(effortConfidence, minimum))
-  effective.effort = supportedEffort(getModel(effective.provider, effective.model), route.role, effortAccepted ? effortChoice : (effective.effort || resolveRoleTarget(route.role, {}).effort))
+  effective.effort = supportedEffort(getModel(effective.provider, effective.model), route.role, effortAccepted ? effortChoice : (effective.effort || 'high'))
   const recommended = execution(effective)
   let source = accepted ? 'jev' : laneAccepted ? 'jev-lane-deterministic-target' : 'deterministic-fallback'
   if (targetAdvice && !accepted) overrides.push({ field: 'jevTarget', requested: decoded || targetAdvice.choice, applied: recommended, reason })
@@ -67,10 +69,10 @@ export function chooseTarget(route, requested, requestedRouteAuthorized, advice,
   if (requested) {
     const candidate = { ...effective, ...requested }, candidateRole = candidate.role || route.role
     const candidateEntry = getModel(candidate.provider, candidate.model)
-    if (candidateEntry && !Object.hasOwn(requested, 'effort') && Object.hasOwn(rank, candidateRole)) candidate.effort = supportedEffort(candidateEntry, candidateRole, resolveRoleTarget(candidateRole, {}).effort)
+    if (candidateEntry && !Object.hasOwn(requested, 'effort') && Object.hasOwn(rank, candidateRole)) candidate.effort = supportedEffort(candidateEntry, candidateRole, candidate.provider==='openai'?resolveRoleTarget(candidateRole, {}).effort:'high')
     const valid = validateModel(candidate)
     const roleFloorMet = (mandatory === 'reviewer' ? candidateRole === 'reviewer' : (!mandatory || rank[candidateRole] >= rank[mandatory])) && rank[candidateRole] >= rank[route.role]
-    const capabilityMet = valid.allowed && eligibleForRole(candidateRole, valid.entry)
+    const capabilityMet = valid.allowed && eligibleForRole(candidateRole, valid.entry) && (valid.entry.id!=='deepseek-flash'||allowsFlash(context))
     const jevAuthoritative = (accepted || laneAccepted) && !requestedRouteAuthorized
     const requestAccepted = Boolean(!jevAuthoritative && roleFloorMet && capabilityMet)
     requestedTrace = { accepted: requestAccepted, authorized: Boolean(requestedRouteAuthorized), reason: requestAccepted ? 'validated-host-request' : jevAuthoritative ? 'jev-authoritative' : valid.reason || (roleFloorMet ? 'deterministic-capability-floor' : 'deterministic-role-floor') }

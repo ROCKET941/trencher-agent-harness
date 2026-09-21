@@ -30,7 +30,7 @@ export async function executeRoutedTask(input={},options={}){
   }else plan=await routeTask(input,options)
   if(!plan.delegation)return{plan,execution:null}
   const target=plan.routingDecision.effective
-  const planned={...plan,commander:{mode:'host',apiCommander:false}}
+  const planned=plan
   if(target.executionMode==='external_api'&&env.HARNESS_ENABLE_PAID_EXECUTION!=='true')return{plan:planned,target,execution:null,reason:'paid-execution-owner-gate-disabled'}
   const readiness=await getProviderStatus(target.provider,{...options,env,refresh:false})
   if(!ready(readiness))return{plan:planned,execution:null,target,readiness,reason:'provider-not-ready'}

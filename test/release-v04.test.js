@@ -8,7 +8,7 @@ import { AccountingStore } from '../src/execution/accountingStore.js'
 
 test('parallel defaults to three', () => assert.equal(resolveBudget().maxParallel, 3))
 test('parallel budget blocks fourth active task', () => assert.equal(checkExecutionBudget({ active: 3 }, resolveBudget()).allowed, false))
-test('models are runtime configured', () => assert.equal(resolveRoleTarget('engineer', { HARNESS_ENGINEER_MODEL: 'x' }).model, 'x'))
+test('legacy runtime model overrides cannot weaken Astra commander policy', () => assert.equal(resolveRoleTarget('engineer', { HARNESS_ENGINEER_MODEL: 'x' }).model, 'gpt-6-astra'))
 
 test('Jev contract normalizes live shape offline', async () => {
   const fetchImpl = async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ model: 'jev-1.13.0', answers: { worker: { type: 'choice', choice: 'scout', confidence: 1, probabilities: { scout: 1 } }, expand_context: { type: 'noul', noul: .1 }, review_required: { type: 'noul', noul: .2 } }, usage: { input_tokens: 10, output_tokens: 3 } }) })

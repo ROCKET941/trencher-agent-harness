@@ -15,7 +15,7 @@ try{
   assert.equal(initialized.value.result.serverInfo.name,'trencher-agent-harness')
   await rpc({jsonrpc:'2.0',method:'notifications/initialized',params:{}},initialized.sessionId)
   const listed=await rpc({jsonrpc:'2.0',id:2,method:'tools/list',params:{}},initialized.sessionId);assert.ok(listed.value.result.tools.some(tool=>tool.name==='model_catalog'))
-  const called=await rpc({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'model_catalog',arguments:{}}},initialized.sessionId),catalog=JSON.parse(called.value.result.content[0].text);assert.equal(catalog.models.length,8)
+  const called=await rpc({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'model_catalog',arguments:{}}},initialized.sessionId),catalog=JSON.parse(called.value.result.content[0].text);assert.equal(catalog.models.length,6)
   const routed=await rpc({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'route_task',arguments:{task:'HTTP smoke split implementation',useJev:false,workstreams:[
     {id:'source',task:'Update the isolated source helper.',files:['src/helper.js']},
     {id:'tests',task:'Add the isolated helper tests.',tests:['test/helper.test.js']}

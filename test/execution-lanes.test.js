@@ -15,7 +15,7 @@ import { createServer } from '../src/mcp/server.js'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
 
 const choice = (choice, confidence = .91) => ({ type: 'choice', choice, confidence })
-const answers = (target = 'deepseek:deepseek-flash', confidence = .91) => ({ worker: choice('engineer'), execution_lane: choice('external_api'), external_target: choice(target, confidence), native_target: choice('openai:gpt-5.6-luna'), effort: choice('high', .2), review_required: { type: 'noul', noul: .9 } })
+const answers = (target = 'deepseek:deepseek-v4-pro', confidence = .91) => ({ worker: choice('engineer'), execution_lane: choice('external_api'), external_target: choice(target, confidence), native_target: choice('openai:gpt-5.6-luna'), effort: choice('high', .2), review_required: { type: 'noul', noul: .9 } })
 const input = { task: 'Analyze the supplied clamp helper and return a bounded patch', risk: 'normal', rootCause: 'Math.min uses the lower bound', evidence: ['function clamp(v, lo, hi) { return Math.min(lo, Math.max(lo, v)); }'], files: ['src/clamp.js'] }
 const report = { name: 'report_result', arguments: JSON.stringify({ status: 'complete', findings: ['Use hi in Math.min'], artifact: null, evidence: ['supplied helper'], tests: ['mock'], blockers: [] }) }
 async function fixture(response = answers(), extraEnv = {}) {
@@ -37,18 +37,18 @@ test('Jev receives independent lane hypotheses and only configured eligible cand
   const { options, calls } = await fixture(answers(), { XAI_API_KEY: '', KIMI_API_KEY: '' })
   const plan = await planTask(input, options), sent = calls[0]
   assert.equal(calls.length, 1)
-  assert.deepEqual(Object.keys(sent.questions.external_target.criteria), ['deepseek:deepseek-flash', 'deepseek:deepseek-v4-pro'])
+  assert.deepEqual(Object.keys(sent.questions.external_target.criteria), ['deepseek:deepseek-v4-pro'])
   assert.match(sent.questions.native_target.instructions, /Independently/)
   assert.match(sent.questions.external_target.instructions, /Independently/)
   assert.match(sent.questions.effort.instructions, /Do not condition on any other answer/)
   assert.match(sent.questions.execution_lane.instructions, /file paths alone are not source content/)
-  assert.equal(plan.advice.target.choice, 'deepseek:deepseek-flash')
+  assert.equal(plan.advice.target.choice, 'deepseek:deepseek-v4-pro')
   assert.equal(plan.advice.reviewRequired.probability, .9)
   assert.equal(plan.review.recommended, true)
 })
 
 test('all three external providers survive uncertain effort and actually dispatch the selected model', async () => {
-  for (const [provider, model] of [['deepseek', 'deepseek-flash'], ['xai', 'grok-4.6'], ['kimi', 'kimi-k3']]) {
+  for (const [provider, model] of [['deepseek', 'deepseek-v4-pro'], ['xai', 'grok-4.6'], ['kimi', 'kimi-k3']]) {
     const { options, calls } = await fixture(answers(`${provider}:${model}`)), executions = []
     clearProviders(); registerProvider(provider, adapter(provider, executions))
     const plan = await routeTask(input, options)
@@ -72,11 +72,11 @@ test('all three external providers survive uncertain effort and actually dispatc
   }
 })
 
-test('confident external lane retains cheapest capable external fallback with uncertain model and effort', async () => {
+test('confident external lane retains strongest-capability external fallback with uncertain model and effort', async () => {
   const { options } = await fixture(answers('kimi:kimi-k3', .25))
   const plan = await planTask(input, options)
-  assert.equal(plan.route.provider, 'deepseek'); assert.equal(plan.route.model, 'deepseek-flash')
-  assert.equal(plan.route.effort, 'high') // upward mapping of the medium default
+  assert.equal(plan.route.provider, 'deepseek'); assert.equal(plan.route.model, 'deepseek-v4-pro')
+  assert.equal(plan.route.effort, 'high') // quality-first external default
   assert.equal(plan.routingDecision.selection.target.source, 'jev-lane-deterministic-target')
   assert.equal(plan.routingDecision.selection.target.jev.accepted, false)
 })
@@ -84,7 +84,7 @@ test('confident external lane retains cheapest capable external fallback with un
 test('confident task effort applies even when the model falls back within the accepted lane', async () => {
   const { options } = await fixture({ ...answers('kimi:kimi-k3', .25), effort: choice('max') })
   const plan = await planTask(input, options)
-  assert.equal(plan.route.model, 'deepseek-flash'); assert.equal(plan.route.effort, 'max')
+  assert.equal(plan.route.model, 'deepseek-v4-pro'); assert.equal(plan.route.effort, 'max')
   assert.equal(plan.routingDecision.selection.target.jev.effortAccepted, true)
 })
 
@@ -119,25 +119,25 @@ test('safety and reviewer floors reject cheap external models without abandoning
   assert.equal(calls[0].questions.external_target.criteria['deepseek:deepseek-flash'], undefined)
   const review = await reviewRoute(input, options)
   assert.equal(review.route.role, 'reviewer'); assert.equal(review.routingDecision.effective.role, 'reviewer')
-  assert.equal(review.delegation.role, 'reviewer'); assert.equal(review.route.model, 'deepseek-v4-pro')
+  assert.equal(review.delegation.role, 'reviewer'); assert.equal(review.route.model, 'gpt-6-astra')
 })
 
 test('native route has workspace permission and never dispatches OpenAI API', async () => {
-  const { options } = await fixture({ ...answers(), execution_lane: choice('native_host'), native_target: choice('openai:gpt-5.6-sol') })
+  const { options } = await fixture({ ...answers(), execution_lane: choice('native_host'), native_target: choice('openai:gpt-6-astra') })
   let invocations = 0; clearProviders(); registerProvider('openai', { execute: async () => { invocations++ } })
   const plan = await routeTask(input, options)
   assert.match(plan.delegation.instruction, /Use host workspace tools only within the assigned scope/)
-  assert.equal(plan.delegation.agent.preferredFamily, 'sol')
+  assert.equal(plan.delegation.agent.preferredFamily, 'astra')
   assert.equal(plan.delegation.agent.reasoning, plan.route.effort)
   assert.doesNotMatch(plan.delegation.instruction, /do not use shell/i)
   const result = await executeRoutedTask({ decisionId: plan.routingDecision.decisionId }, options)
   assert.equal(result.reason, 'native-host-agent-required'); assert.equal(invocations, 0)
-  assert.equal(result.handoff.model, 'gpt-5.6-sol'); assert.equal(result.handoff.parentModelUnchanged, true)
+  assert.equal(result.handoff.model, 'gpt-6-astra'); assert.equal(result.handoff.parentModelUnchanged, true)
 })
 
 test('direct review callers cannot relabel reviewers even with an authorized equal-or-higher-rank role', async () => {
   for (const role of ['deep_debugger', 'exceptional', 'engineer']) {
-    const plan = await reviewRoute({ ...input, requestedRouteAuthorized: true, requestedRoute: { role, provider: 'openai', model: 'gpt-6-astra', effort: 'max' } }, { env: {}, useJev: false })
+    const plan = await reviewRoute({ ...input, requestedRouteAuthorized: true, requestedRoute: { role, provider: 'openai', model: 'gpt-6-astra', effort: 'xhigh' } }, { env: {}, useJev: false })
     assert.equal(plan.routingDecision.effective.role, 'reviewer'); assert.equal(plan.delegation.role, 'reviewer')
     assert.equal(plan.routingDecision.selection.target.requested.reason, 'deterministic-role-floor')
   }
@@ -164,7 +164,7 @@ test('pinned plans reject altered authority, evidence and targets before Jev or 
   }
   assert.equal(calls.length, 1); assert.equal(executions.length, 0)
   const valid = await executeRoutedTask({ decisionId }, options)
-  assert.equal(valid.target.model, 'deepseek-flash'); assert.equal(executions[0].task, input.task)
+  assert.equal(valid.target.model, 'deepseek-v4-pro'); assert.equal(executions[0].task, input.task)
 })
 
 test('execution rechecks paid gate and credentials, and expired/evicted decisions never reroute', async () => {
@@ -213,17 +213,17 @@ test('MCP route to pinned execute calls Jev once and preserves all existing tool
     assert.equal(executed.execution.executed, true); assert.equal(calls.length, 1); assert.equal(executions.length, 1)
     const review = JSON.parse((await request('tools/call', { name: 'review_route', arguments: input })).content[0].text)
     assert.equal(review.route.role, 'reviewer'); assert.equal(review.routingDecision.effective.role, 'reviewer')
-    assert.equal(calls.length, 2)
+    assert.equal(calls.length, 1)
   } finally { await client.close() }
 })
 
 test('one Jev request produces pinned heterogeneous assignments and each executes exactly once', async () => {
   const response = {
-    ...answers('deepseek:deepseek-flash'),
+    ...answers('deepseek:deepseek-v4-pro'),
     execution_lane: choice('native_host'), native_target: choice('openai:gpt-5.6-luna'), effort: choice('medium'),
     parallel_required: { type: 'noul', noul: .95 }, parallel_justification: choice('independent'),
-    workstream_0_execution_lane: choice('native_host'), workstream_0_native_target: choice('openai:gpt-5.6-sol'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_effort: choice('high'),
-    workstream_1_execution_lane: choice('external_api'), workstream_1_native_target: choice('openai:gpt-5.6-luna'), workstream_1_external_target: choice('deepseek:deepseek-flash'), workstream_1_effort: choice('low'),
+    workstream_0_execution_lane: choice('native_host'), workstream_0_native_target: choice('openai:gpt-6-astra'), workstream_0_external_target: choice('deepseek:deepseek-v4-pro'), workstream_0_effort: choice('high'),
+    workstream_1_execution_lane: choice('external_api'), workstream_1_native_target: choice('openai:gpt-5.6-luna'), workstream_1_external_target: choice('deepseek:deepseek-v4-pro'), workstream_1_effort: choice('low'),
     workstream_2_execution_lane: choice('external_api'), workstream_2_native_target: choice('openai:gpt-5.6-luna'), workstream_2_external_target: choice('kimi:kimi-k3'), workstream_2_effort: choice('low')
   }
   const { options, calls } = await fixture(response), deepseekCalls = [], kimiCalls = []
@@ -240,7 +240,8 @@ test('one Jev request produces pinned heterogeneous assignments and each execute
   for (const index of [0, 1, 2]) {
     assert.ok(calls[0].questions[`workstream_${index}_execution_lane`])
     assert.ok(calls[0].questions[`workstream_${index}_native_target`])
-    assert.ok(calls[0].questions[`workstream_${index}_external_target`])
+    if(index===0)assert.equal(calls[0].questions[`workstream_${index}_external_target`],undefined)
+    else assert.ok(calls[0].questions[`workstream_${index}_external_target`])
     assert.ok(calls[0].questions[`workstream_${index}_effort`])
   }
   const assignments = plan.routingDecision.parallel.assignments
@@ -249,8 +250,8 @@ test('one Jev request produces pinned heterogeneous assignments and each execute
   assert.equal(plan.routingDecision.handoff.scope, 'workstream-assignments')
   assert.equal(plan.routingDecision.handoff.orchestration.strategy, 'heterogeneous-non-overlapping')
   assert.deepEqual(assignments.map(value => [value.id, value.effective.provider, value.effective.model, value.effective.effort]), [
-    ['repository-check', 'openai', 'gpt-5.6-sol', 'high'],
-    ['bounded-patch', 'deepseek', 'deepseek-flash', 'low'],
+    ['repository-check', 'openai', 'gpt-5.6-luna', 'max'],
+    ['bounded-patch', 'deepseek', 'deepseek-v4-pro', 'low'],
     ['bounded-review', 'kimi', 'kimi-k3', 'low']
   ])
   assert.equal(new Set(assignments.map(value => value.decisionId)).size, 3)
@@ -259,7 +260,7 @@ test('one Jev request produces pinned heterogeneous assignments and each execute
   const native = await executeRoutedTask({ decisionId: assignments[0].decisionId }, options)
   const deepseek = await executeRoutedTask({ decisionId: assignments[1].decisionId }, options)
   const kimi = await executeRoutedTask({ decisionId: assignments[2].decisionId }, options)
-  assert.equal(native.reason, 'native-host-agent-required'); assert.equal(native.target.model, 'gpt-5.6-sol')
+  assert.equal(native.reason, 'native-host-agent-required'); assert.equal(native.target.model, 'gpt-5.6-luna')
   assert.equal(deepseek.execution.executed, true); assert.equal(kimi.execution.executed, true)
   assert.equal(deepseekCalls[0].task, workstreams[1].task); assert.equal(kimiCalls[0].task, workstreams[2].task)
   assert.equal(calls.length, 1)
@@ -270,7 +271,7 @@ test('one Jev request produces pinned heterogeneous assignments and each execute
 test('incomplete workstream advice falls back every assignment to native without weakening bounds', async () => {
   const response = {
     ...answers(),
-    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low')
+    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-v4-pro'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low')
   }
   const { options } = await fixture(response)
   const workstreams = [
@@ -286,7 +287,7 @@ test('incomplete workstream advice falls back every assignment to native without
 test('one malformed workstream answer makes the assignment set fall back atomically', async () => {
   const response = {
     ...answers(),
-    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low'),
+    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-v4-pro'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low'),
     workstream_1_execution_lane: { type: 'choice', choice: 'unknown_lane', confidence: .99 }, workstream_1_external_target: choice('kimi:kimi-k3'), workstream_1_native_target: choice('openai:gpt-5.6-luna'), workstream_1_effort: choice('low')
   }
   const { options } = await fixture(response)
@@ -306,7 +307,7 @@ test('a high-risk workstream receives its own deterministic capability and revie
   ] }, options)
   const [ordinary,sensitive]=plan.routingDecision.parallel.assignments
   assert.equal(plan.packet.risk,'normal');assert.equal(ordinary.effective.role,'engineer')
-  assert.equal(sensitive.effective.role,'deep_debugger');assert.equal(sensitive.effective.model,'gpt-5.6-sol');assert.equal(sensitive.effective.effort,'high')
+  assert.equal(sensitive.effective.role,'deep_debugger');assert.equal(sensitive.effective.model,'gpt-6-astra');assert.equal(sensitive.effective.effort,'xhigh')
   const execution=await executeRoutedTask({decisionId:sensitive.decisionId},options)
   assert.equal(execution.plan.packet.risk,'high');assert.equal(execution.plan.review.required,true)
   assert.equal(execution.plan.policy.contextProfile,'expanded');assert.equal(execution.plan.policy.retrievalMode,'exploratory')

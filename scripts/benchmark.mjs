@@ -8,7 +8,10 @@ import { createEvidencePacket } from '../src/context/evidencePacket.js'
 import { authorizeAction } from '../src/policy/safety.js'
 import { nextAttemptState } from '../src/policy/antiLoop.js'
 import { executeRoutedTask } from '../src/mcp/tools-v04.js'
+import { reviewRoute, checkAction } from '../src/mcp/tools.js'
 import { AccountingStore } from '../src/execution/accountingStore.js'
+import { PlanCache } from '../src/router/planCache.js'
+import { routingModels } from '../src/router/jev.js'
 import { atLeast, boundedAt, gradeProviderTask, summarize } from '../benchmark/grading.js'
 import { verifyClampPatch } from '../benchmark/git-fixture.js'
 
@@ -30,10 +33,15 @@ async function deterministicChecks() {
   const exact = await planTask({ task: 'Find every caller of reconcileSwapFill.', files: ['src/swap/reconcile.ts'] }, { useJev: false })
   check('policy.route.exact.role', 'routing-policy', exact.route.role === 'scout', 'scout', exact.route.role, 2)
   check('policy.route.exact.context', 'routing-policy', exact.policy.contextProfile === 'tight' && exact.policy.retrievalMode === 'exact', 'tight/exact', `${exact.policy.contextProfile}/${exact.policy.retrievalMode}`, 2)
+  check('policy.route.exact.luna', 'quality-gate', exact.route.model === 'gpt-5.6-luna' && exact.route.effort === 'max' && exact.delegation?.policy?.readOnly === true, 'Luna Max read-only', { model:exact.route.model, effort:exact.route.effort, readOnly:exact.delegation?.policy?.readOnly }, 3)
 
   const localized = await planTask({ task: 'Fix a localized stale quote.', rootCause: 'missing memo dependency', files: ['src/quote.ts'] }, { useJev: false })
   check('policy.route.localized.role', 'routing-policy', localized.route.role === 'engineer', 'engineer', localized.route.role, 2)
   check('policy.route.localized.context', 'routing-policy', localized.policy.contextProfile === 'tight' && localized.policy.retrievalMode === 'adjacent', 'tight/adjacent', `${localized.policy.contextProfile}/${localized.policy.retrievalMode}`, 2)
+  check('policy.route.localized.commander-review', 'quality-gate', localized.route.model === 'gpt-6-astra' && localized.route.effort === 'xhigh' && localized.review?.required === true && localized.review?.reviewer?.count === 1, 'Astra XHigh commander plus one required reviewer', { route:localized.route, review:localized.review }, 4)
+
+  const externalPool=routingModels({HARNESS_ENABLE_PAID_EXECUTION:'true',XAI_API_KEY:'benchmark',DEEPSEEK_API_KEY:'benchmark',KIMI_API_KEY:'benchmark'},'engineer',{...localized.packet,taskKind:'implementation'}).filter(model=>model.executionMode==='external_api').map(model=>`${model.provider}:${model.id}`)
+  check('policy.external.quality-pool', 'quality-gate', JSON.stringify(externalPool)===JSON.stringify(['xai:grok-4.6','deepseek:deepseek-v4-pro','kimi:kimi-k3']), 'Grok 4.6, DeepSeek V4 Pro, Kimi K3; no Flash', externalPool, 4)
 
   const high = await planTask({ task: 'Diagnose production financial settlement concurrency failure.', risk: 'high' }, { useJev: false })
   check('policy.route.high.role', 'safety', high.route.role === 'deep_debugger', 'deep_debugger', high.route.role, 3)
@@ -60,19 +68,25 @@ async function deterministicChecks() {
   check('policy.context.sizes', 'context-control', packet.task.length <= 4000 && packet.evidence.every(value => value.length <= 3000), 'task <=4000 and evidence <=3000 chars', { task: packet.task.length, evidence: packet.evidence.map(value => value.length) }, 2)
   check('policy.context.truncation', 'context-control', packet.truncation.occurred && packet.truncation.truncatedFields.length > 0 && packet.truncation.dropped.evidence === 7, 'explicit truncation and dropped counts', packet.truncation, 2)
 
-  const native = await executeRoutedTask({ task: 'Implement a localized UI fix.', rootCause: 'stale memo dependency', requestedRoute: { role: 'engineer', provider: 'openai', model: 'gpt-5.6-terra', effort: 'high' } }, { useJev: false, env: {} })
+  const native = await executeRoutedTask({ task: 'Implement a localized UI fix.', rootCause: 'stale memo dependency', requestedRoute: { role: 'engineer', provider: 'openai', model: 'gpt-6-astra', effort: 'xhigh' } }, { useJev: false, env: {} })
   check('policy.native.no-api', 'native-boundary', native.reason === 'native-host-agent-required' && native.execution === null, 'native handoff with no API execution', { reason: native.reason, execution: native.execution }, 4)
   check('policy.native.billing', 'native-boundary', native.handoff?.billingSource === 'chatgpt_plan' && native.target?.executionMode === 'native_host', 'chatgpt_plan/native_host', { handoff: native.handoff, target: native.target }, 4)
-  check('policy.native.subagent-only', 'native-boundary', native.handoff?.scope === 'subagent-only' && native.handoff?.parentModelUnchanged === true, 'subagent-only / parent unchanged', native.handoff, 4)
+  check('policy.native.commander', 'native-boundary', native.handoff?.scope === 'commander' && native.handoff?.parentModelUnchanged === true, 'Astra commander / parent unchanged', native.handoff, 4)
 
   const choice=(value,confidence)=>({type:'choice',choice:value,confidence,probabilities:{[value]:1}}),noul=value=>({type:'noul',noul:value})
-  const jevFetch=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'benchmark-jev',answers:{worker:choice('engineer',.25),target:choice('openai:gpt-5.6-luna:high',.2),context_profile:choice('tight',.9),retrieval_mode:choice('adjacent',.9),expand_context:noul(0),parallel_required:noul(.9),parallel_justification:choice('independent',.9),review_required:noul(0)},usage:{}})})
+  const jevFetch=async()=>({ok:true,status:200,headers:{get:()=>null},json:async()=>({model:'benchmark-jev',answers:{worker:choice('engineer',.25),target:choice('openai:gpt-6-astra:xhigh',.2),context_profile:choice('tight',.9),retrieval_mode:choice('adjacent',.9),expand_context:noul(0),parallel_required:noul(.9),parallel_justification:choice('independent',.9),review_required:noul(0)},usage:{}})})
   const jevEnv={TYPESAFE_API_KEY:'benchmark',HARNESS_ENABLE_PAID_EXECUTION:'true',HARNESS_JEV_CALL_COST_USD:'.01',JEV_MIN_CONFIDENCE:'.70',HARNESS_MAX_PARALLEL:'3'}
   const jevPlan=await planTask({task:'Implement three independent bounded modules.',files:['src/a.js','src/b.js','src/c.js']},{env:jevEnv,store:new AccountingStore(),fetchImpl:jevFetch,useCache:false})
-  check('policy.jev.low-confidence-target', 'routing-policy', jevPlan.route.model === 'gpt-5.6-luna' && jevPlan.route.effort === 'medium' && jevPlan.routingDecision.selection.target.source === 'deterministic-fallback' && jevPlan.routingDecision.selection.target.jev.reason === 'insufficient-confidence', 'transparent cheapest-capable fallback', jevPlan.routingDecision.selection.target, 4)
-  check('policy.jev.parallel-handoff', 'routing-policy', jevPlan.routingDecision.parallel.effective === 3 && jevPlan.routingDecision.handoff?.orchestration?.strategy === 'parallel-non-overlapping', '3 parallel non-overlapping native subagents', {parallel:jevPlan.routingDecision.parallel,handoff:jevPlan.routingDecision.handoff}, 4)
+  check('policy.jev.low-confidence-target', 'routing-policy', jevPlan.route.model === 'gpt-6-astra' && jevPlan.route.effort === 'xhigh' && jevPlan.routingDecision.selection.target.source === 'deterministic-fallback' && jevPlan.routingDecision.selection.target.jev.reason === 'insufficient-confidence', 'transparent Astra XHigh fallback', jevPlan.routingDecision.selection.target, 4)
+  check('policy.jev.parallel-handoff', 'routing-policy', jevPlan.routingDecision.parallel.effective === 3 && jevPlan.routingDecision.handoff?.orchestration?.strategy === 'commander' && jevPlan.routingDecision.handoff?.orchestration?.maxAgents === 1, 'parallel work advice retained with one Astra commander', {parallel:jevPlan.routingDecision.parallel,handoff:jevPlan.routingDecision.handoff}, 4)
   const apiCommander = await executeRoutedTask({ task: 'Implement a localized fix.', commanderMode: 'api' }, { useJev: false, env: {} })
   check('policy.api-commander', 'native-boundary', apiCommander.reason === 'api-commander-disabled-native-host-policy' && apiCommander.execution === null, 'API commander fails closed', apiCommander, 4)
+
+  const planCache=new PlanCache(),artifactDigest='a'.repeat(64),review=await reviewRoute({task:'Review the complete integrated benchmark change.',rootCause:'implementation-complete',reviewContext:{artifactDigest,commanderAgentId:'benchmark-commander'}},{useJev:false,env:{},planCache})
+  const commit={reviewDecisionId:review.routingDecision.decisionId,artifactDigest,commander:{agentId:'benchmark-commander',provider:'openai',model:'gpt-6-astra',effort:'xhigh'},review:{agentId:'benchmark-reviewer',provider:'openai',model:'gpt-6-astra',effort:'xhigh',artifactDigest,fresh:true,readOnly:true,accepted:true,blockers:[]},verification:{artifactDigest,scopeVerified:true,checks:['tests','build','typecheck','lint'].map(name=>({name,status:'passed',evidence:`benchmark ${name} passed`}))}}
+  const approved=checkAction({action:'commit',commit},{planCache}),stale=structuredClone(commit);stale.review.artifactDigest='b'.repeat(64)
+  check('policy.review.fixed-astra', 'quality-gate', review.route.model === 'gpt-6-astra' && review.route.effort === 'xhigh' && review.delegation?.policy?.readOnly === true && review.routingDecision?.handoff?.orchestration?.maxAgents === 1, 'one read-only Astra XHigh reviewer', {route:review.route,handoff:review.routingDecision?.handoff}, 4)
+  check('policy.commit-gate', 'quality-gate', approved.allowed === true && checkAction({action:'commit',commit:stale},{planCache}).allowed === false, 'matching acceptance allowed; stale acceptance denied', {approved,stale:checkAction({action:'commit',commit:stale},{planCache})}, 5)
 }
 
 let session = null
@@ -130,12 +144,12 @@ async function liveChecks() {
     if (item.expect.reviewRequired) check(`jev.${item.id}.review`, 'jev-routing', plan.review?.required === true, true, plan.review, 3)
   }
 
-  const native = await tool('execute_routed_task', { task: 'Benchmark native handoff for a bounded implementation.', rootCause: 'known localized defect', requestedRoute: { role: 'engineer', provider: 'openai', model: 'gpt-5.6-terra', effort: 'high' } })
+  const native = await tool('execute_routed_task', { task: 'Benchmark native handoff for a bounded implementation.', rootCause: 'known localized defect', requestedRoute: { role: 'engineer', provider: 'openai', model: 'gpt-6-astra', effort: 'xhigh' } })
   check('live.native.execution-boundary', 'native-boundary', native.data?.reason === 'native-host-agent-required' && native.data?.execution === null && native.data?.handoff?.billingSource === 'chatgpt_plan', 'native handoff, no API execution', native.data, 5)
 
   const targets = [
     { name: 'Grok 4.6', provider: 'xai', model: 'grok-4.6', effort: 'high' },
-    { name: 'DeepSeek Flash', provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
+    { name: 'DeepSeek V4 Pro', provider: 'deepseek', model: 'deepseek-v4-pro', effort: 'high' },
     { name: 'Kimi K3', provider: 'kimi', model: 'kimi-k3', effort: 'high' }
   ]
   const executions = []
@@ -149,6 +163,7 @@ async function liveChecks() {
         tests: taskCase.tests,
         evidence: taskCase.evidence,
         requestedRoute: { provider: target.provider, model: target.model, effort: target.effort },
+        requestedRouteAuthorized: true,
         idempotencyKey: `benchmark-${cases.version}-${runId}-${target.provider}-${taskCase.id}`,
         deadlineMs: 90000,
         budget: { maxInputTokens: 3500, maxEstimatedInputTokens: 3500, maxOutputTokens: 1500, maxDelegations: 1 }

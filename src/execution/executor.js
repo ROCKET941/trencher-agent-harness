@@ -1,12 +1,13 @@
 import path from 'node:path'
 import routing from '../../config/routing.json' with {type:'json'}
 import { getProvider } from '../providers/registry-v12.js'
-import { validateModel, estimateCostUsd } from '../providers/catalog.js'
+import { validateModel, estimateCostUsd, eligibleForRole } from '../providers/catalog.js'
 import { resolveBudget, checkEstimatedInput } from '../budget/executionBudget.js'
 import { AccountingStore } from './accountingStore.js'
 import { taskIdentityFromContext, digestValue } from './taskIdentity.js'
 import { normalizeApprovedEvidence, safeRelativePath } from './boundedEvidence.js'
 import { providerExecutionPolicy } from '../policy/providerExecution.js'
+import { taskKind, allowsFlash } from '../policy/quality.js'
 
 const stores=new Map(), active=new Map()
 export function taskIdentity(delegation,workspace=''){return taskIdentityFromContext(delegation.context,workspace)}
@@ -32,6 +33,8 @@ function validatedTarget(provider,model,effort){let validated=validateModel({pro
 async function dispatch({request,provider,model,effort,budget,ledger,resolvedTaskId,idempotencyKey,deadlineMs,signal,attemptClass,evidenceHash,parentJobId,ownerAuthorizedRetry=false,retryReason=''}){
   const providerPolicy=providerExecutionPolicy(provider)
   if(!providerPolicy.allowed)return{executed:false,reason:providerPolicy.reason,executionMode:providerPolicy.executionMode,billingSource:providerPolicy.billingSource,provider,model,effort,taskId:resolvedTaskId}
+  const policyTarget=validatedTarget(provider,model,effort)
+  if(policyTarget.allowed&&!policyTarget.localAdapter&&(!eligibleForRole(request.role,policyTarget.entry)||(model==='deepseek-flash'&&!allowsFlash({...request.context,taskKind:taskKind(request.context,request.context?.taskKind)}))))return{executed:false,reason:'quality-capability-policy',taskId:resolvedTaskId}
   const adapter=getProvider(provider),payload=typeof adapter.prepare==='function'?adapter.prepare(request):request,preflight=checkEstimatedInput(payload,budget)
   if(!preflight.allowed)return{executed:false,reason:'estimated-input-too-large',preflight,taskId:resolvedTaskId}
   const validated=validatedTarget(provider,model,effort)
