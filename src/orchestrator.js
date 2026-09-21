@@ -71,21 +71,31 @@ function chooseWorker(fallback, mandatory, advice, env) {
   }
 }
 
-function normalizeWorkstreams(input) {
+function normalizeWorkstreams(input, risk = 'normal') {
   const values = Array.isArray(input.workstreams) ? input.workstreams.slice(0, 3) : []
   const issues = []
   if (Array.isArray(input.workstreams) && input.workstreams.length > 3) issues.push({ reason: 'too-many-workstreams' })
   for (const value of values) {
-    if (!value || typeof value.task !== 'string' || !value.task.trim() || ['files', 'tests', 'dependsOn'].some(key => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string' || !item.trim())))) issues.push({ reason: 'invalid-workstream' })
-    if (value?.files?.length > 12 || value?.tests?.length > 8 || value?.dependsOn?.length > 3) issues.push({ reason: 'truncated-workstream-ownership' })
+    if (!value || typeof value.task !== 'string' || !value.task.trim() || ['files', 'tests', 'dependsOn', 'evidence'].some(key => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string' || !item.trim()))) || (value?.rootCause != null && typeof value.rootCause !== 'string')) issues.push({ reason: 'invalid-workstream' })
+    if (value?.files?.length > 3 || value?.tests?.length > 2) issues.push({ reason: 'workstream-ownership-exceeds-assignment-bounds' })
+    if (value?.dependsOn?.length > 3) issues.push({ reason: 'truncated-workstream-dependencies' })
+    if (['files', 'tests', 'dependsOn'].some(key => value?.[key]?.some(item => item.length > 500))) issues.push({ reason: 'oversized-workstream-identifier' })
   }
-  const workstreams = values.map((value, index) => ({
-    id: String(value?.id || `workstream-${index + 1}`).slice(0, 80),
-    task: String(value?.task || '').slice(0, 1000),
-    files: [...new Set((Array.isArray(value?.files) ? value.files : []).map(String).filter(Boolean))].slice(0, 12),
-    tests: [...new Set((Array.isArray(value?.tests) ? value.tests : []).map(String).filter(Boolean))].slice(0, 8),
-    dependsOn: [...new Set((Array.isArray(value?.dependsOn) ? value.dependsOn : []).map(String).filter(Boolean))].slice(0, 3)
-  })).filter(value => value.task)
+  const workstreams = values.map((value, index) => {
+    const task=String(value?.task||''),workstreamRisk=risk==='high'||classifyRisk(task).risk==='high'?'high':risk
+    const bounded=createEvidencePacket({task,risk:workstreamRisk,rootCause:value?.rootCause??null,evidence:Array.isArray(value?.evidence)?value.evidence:[]},{contextProfile:'tight'})
+    return{
+      id: String(value?.id || `workstream-${index + 1}`).slice(0, 80),
+      task: bounded.task,
+      risk: workstreamRisk,
+      rootCause: bounded.rootCause,
+      evidence: bounded.evidence,
+      files: [...new Set((Array.isArray(value?.files) ? value.files : []).map(String).filter(Boolean))].slice(0, 3),
+      tests: [...new Set((Array.isArray(value?.tests) ? value.tests : []).map(String).filter(Boolean))].slice(0, 2),
+      dependsOn: [...new Set((Array.isArray(value?.dependsOn) ? value.dependsOn : []).map(String).filter(Boolean))].slice(0, 3),
+      truncation: bounded.truncation
+    }
+  }).filter(value => value.task)
   const owners = new Map(), conflicts = [], ids = new Set()
   for (const workstream of workstreams) {
     if (ids.has(workstream.id)) issues.push({ workstream: workstream.id, reason: 'duplicate-workstream-id' })
@@ -93,8 +103,9 @@ function normalizeWorkstreams(input) {
     if (!workstream.files.length && !workstream.tests.length) issues.push({ workstream: workstream.id, reason: 'missing-file-ownership' })
     if (workstream.dependsOn.length) issues.push({ workstream: workstream.id, reason: 'dependent-workstream' })
     for (const file of [...workstream.files, ...workstream.tests]) {
-      const canonical = path.posix.normalize(file.replaceAll('\\', '/')).toLowerCase()
-      if (/[*?\[\]{}]/.test(canonical) || canonical === '.' || canonical === '..' || canonical.startsWith('../') || path.posix.isAbsolute(canonical) || /^[a-z]:/.test(canonical)) issues.push({ workstream: workstream.id, file, reason: 'ambiguous-file-ownership' })
+      const raw=file.replaceAll('\\', '/'),canonical = path.posix.normalize(raw).toLowerCase()
+      const unsafe=/[*?\[\]{}]/.test(raw)||raw.split('/').includes('..')||/(^|\/)(\.env|\.git|secrets?)(\/|$)/i.test(raw)||canonical === '.'||canonical === '..'||canonical.startsWith('../')||path.posix.isAbsolute(canonical)||/^[a-z]:/.test(canonical)
+      if (unsafe) { issues.push({ workstream: workstream.id, file, reason: 'ambiguous-file-ownership' }); continue }
       for (const [owned, owner] of owners) {
         if (owner !== workstream.id && (canonical === owned || canonical.startsWith(`${owned}/`) || owned.startsWith(`${canonical}/`))) conflicts.push({ file, workstreams: [owner, workstream.id] })
       }
@@ -104,9 +115,8 @@ function normalizeWorkstreams(input) {
   return { workstreams, conflicts, issues, nonOverlapping: conflicts.length === 0 && issues.length === 0 }
 }
 
-function parallelPlan(input, advice, env) {
+function parallelPlan(input, advice, env, normalized = normalizeWorkstreams(input)) {
   const minimum = threshold(env.JEV_PARALLEL_THRESHOLD, 0.80)
-  const normalized = normalizeWorkstreams(input)
   const jevParallel = advice?.available && confident(advice.parallelRequired?.probability, minimum) && confident(advice.parallelJustification?.confidence, threshold(env.JEV_MIN_CONFIDENCE, 0.70)) && ['independent', 'critical_path'].includes(advice?.parallelJustification?.choice)
   const suppliedParallel = normalized.workstreams.length > 1 && normalized.nonOverlapping
   const recommended = suppliedParallel ? normalized.workstreams.length : (jevParallel ? 3 : 1)
@@ -127,11 +137,55 @@ function parallelPlan(input, advice, env) {
   }
 }
 
+const executionContext = input => ({
+  workspace: String(input.workspace || '').slice(0, 1000),
+  ownerAuthorizedRetry: Boolean(input.ownerAuthorizedRetry),
+  retryReason: String(input.retryReason || '').slice(0, 500),
+  attempts: (input.attempts || []).length,
+  newEvidence: Boolean(input.newEvidence)
+})
+const dispatchFor = target => target.executionMode === 'external_api' ? {
+  tool: 'execute_routed_task',
+  instruction: 'Execute this server-held decision using decisionId and optional budget/deadline only. Do not reroute or pass model, evidence, or authority overrides. The parent applies and verifies any returned patch.'
+} : null
+function handoffFor(target, { strategy = 'single', maxAgents = 1 } = {}) {
+  if (target.executionMode !== 'native_host') return null
+  return {
+    required: true, mode: 'native_host', scope: 'subagent-only', parentModelUnchanged: true, billingSource: 'chatgpt_plan',
+    role: target.role, provider: target.provider, model: target.model, effort: target.effort,
+    orchestration: { strategy, maxAgents, routeOncePerPhase: true, instruction: strategy === 'single'
+      ? 'Spawn one bounded native Codex subagent when delegation is useful. Keep the parent model unchanged; the parent integrates and verifies.'
+      : `Spawn up to ${maxAgents} native Codex subagents concurrently for independent, non-overlapping workstreams. Keep the parent model unchanged; the parent integrates and verifies.` }
+  }
+}
+function scopedWorkstreamAdvice(advice, index, expectedIds) {
+  if (!advice?.available) return null
+  const values=advice.workstreamAdvice
+  const valid=Array.isArray(values)&&values.length===expectedIds.length&&values.every((value,position)=>
+    value?.id===expectedIds[position]&&value.laneAdvicePresent&&value.executionLane&&value.nativeTarget&&value.effort&&
+    (value.executionLane.choice!=='external_api'||value.externalTarget))
+  return valid?{...advice,...values[index]}:null
+}
+function workstreamPacket(workstream, input, contextProfile) {
+  const packet=createEvidencePacket({
+    task: workstream.task, risk: workstream.risk, rootCause: workstream.rootCause, evidence: workstream.evidence,
+    files: workstream.files, tests: workstream.tests, protectedBoundaries: input.protectedBoundaries || []
+  }, { contextProfile })
+  packet.truncation.removed=[...new Set([...(workstream.truncation?.removed||[]),...packet.truncation.removed])]
+  packet.truncation.occurred=Boolean(workstream.truncation?.occurred||packet.truncation.occurred)
+  return packet
+}
+function strongestRoute(...routes) {
+  const valid=routes.filter(value=>value?.role&&Object.hasOwn(rank,value.role))
+  return valid.reduce((strongest,value)=>rank[value.role]>rank[strongest.role]?value:strongest)
+}
+
 export async function planTask(input, options = {}) {
   const env = options.env || process.env
   const classifiedRisk = classifyRisk(input.task).risk
   const risk = input.risk === 'high' || classifiedRisk === 'high' ? 'high' : (input.risk || classifiedRisk)
   const initialPacket = createEvidencePacket({ ...input, risk }, { contextProfile: 'normal' })
+  const normalizedWorkstreams = normalizeWorkstreams(input, risk)
   const attempt = nextAttemptState({
     attempts: input.attempts || [],
     newEvidence: Boolean(input.newEvidence),
@@ -143,7 +197,8 @@ export async function planTask(input, options = {}) {
   const fallback = options.review ? { role: 'reviewer', action: 'delegate', reason: 'independent-review-required' } : deterministicRoute({ task: initialPacket.task, risk, rootCause: initialPacket.rootCause, attempts: (input.attempts || []).length })
   const mandatory = options.review ? 'reviewer' : mandatoryRole(input, initialPacket)
   let advice = null
-  if (options.useJev !== false) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || 'scout' })
+  const jevWorkstreams=normalizedWorkstreams.nonOverlapping&&normalizedWorkstreams.workstreams.length>1?normalizedWorkstreams.workstreams:[]
+  if (options.useJev !== false) advice = await askRoutingJev(initialPacket, { ...options, roleFloor: mandatory || 'scout', workstreams:jevWorkstreams })
   const worker = options.review ? { route: fallback, trace: { source: 'deterministic-review-policy', mandatoryFloor: 'reviewer' } } : chooseWorker(fallback, mandatory, advice, env)
   const route = worker.route
   const contextPolicy = applyAdvice(initialPacket, deterministicContext(initialPacket, route), advice, env)
@@ -160,26 +215,55 @@ export async function planTask(input, options = {}) {
   const requested = input.requestedRoute || null
   const overrides = []
   const target = chooseTarget(route, requested, Boolean(input.requestedRouteAuthorized), advice, env, mandatory, overrides)
-  const parallel = parallelPlan(input, advice, env)
-  const handoff = target.effective.executionMode === 'native_host' ? {
-    required: true,
-    mode: 'native_host',
-    scope: 'subagent-only',
-    parentModelUnchanged: true,
-    billingSource: 'chatgpt_plan',
-    role: target.effective.role,
-    provider: target.effective.provider,
-    model: target.effective.model,
-    effort: target.effective.effort,
-    orchestration: {
-      strategy: parallel.effective > 1 ? 'parallel-non-overlapping' : 'single',
-      maxAgents: parallel.effective,
-      routeOncePerPhase: true,
-      instruction: parallel.effective > 1
-        ? `Spawn up to ${parallel.effective} native Codex subagents concurrently for independent, non-overlapping workstreams. Keep the parent model unchanged; the parent integrates and verifies.`
-        : 'Spawn one bounded native Codex subagent when delegation is useful. Keep the parent model unchanged; the parent integrates and verifies.'
+  const parallel = parallelPlan(input, advice, env, normalizedWorkstreams)
+  const phaseExecutionContext=executionContext(input)
+  const workstreamPlans=[]
+  if(parallel.nonOverlapping&&parallel.workstreams.length>1){
+    const expectedIds=parallel.workstreams.map(value=>value.id)
+    for(const [index,workstream] of parallel.workstreams.entries()){
+      const scopedAdvice=scopedWorkstreamAdvice(advice,index,expectedIds),workstreamOverrides=[]
+      const workstreamInitialPacket=workstreamPacket(workstream,input,'normal')
+      const workstreamFallback=deterministicRoute({task:workstream.task,risk:workstream.risk,rootCause:workstream.rootCause,attempts:(input.attempts||[]).length})
+      const workstreamMandatory=mandatoryRole(input,workstreamInitialPacket)
+      const workstreamRoute=strongestRoute(route,workstreamFallback,workstreamMandatory?{role:workstreamMandatory,action:'delegate',reason:'deterministic-workstream-floor'}:null)
+      const workstreamContextPolicy=applyAdvice(workstreamInitialPacket,deterministicContext(workstreamInitialPacket,workstreamRoute),scopedAdvice,env)
+      const workstreamEvidence=workstreamPacket(workstream,input,workstreamContextPolicy.contextProfile)
+      const workstreamReviewProbability=scopedAdvice?.reviewRequired?.probability??0
+      const workstreamReview={
+        required:workstream.risk==='high',recommended:workstream.risk==='high'||workstreamReviewProbability>=reviewThreshold,
+        reason:workstream.risk==='high'?'deterministic-high-risk-policy':(workstreamReviewProbability>=reviewThreshold?'jev':'not-required'),probability:workstreamReviewProbability
+      }
+      const workstreamPolicy={...workstreamContextPolicy,review:workstreamReview}
+      const workstreamTarget=chooseTarget(workstreamRoute,requested,Boolean(input.requestedRouteAuthorized),scopedAdvice,env,workstreamMandatory,workstreamOverrides)
+      const workstreamWorkerTrace=workstreamRoute.role===route.role?worker.trace:{source:'deterministic-workstream-floor',fallback:route.role,mandatoryFloor:workstreamMandatory,applied:workstreamRoute.role}
+      const workstreamDecision={
+        requested,recommended:workstreamTarget.recommended,effective:workstreamTarget.effective,
+        selection:{worker:workstreamWorkerTrace,target:workstreamTarget.trace},overrides:workstreamOverrides,
+        handoff:handoffFor(workstreamTarget.effective),dispatch:dispatchFor(workstreamTarget.effective),parallel:null,
+        workstream:{id:workstream.id},executionContext:phaseExecutionContext,
+        planReuse:{routingPhaseId:`${input.routingPhaseId||'phase'}:${workstream.id}`,routeOncePerPhase:true,instruction:'Execute or hand off this pinned workstream decision once; the parent integrates and verifies it.'}
+      }
+      workstreamPlans.push(withDecisionTrace({
+        packet:workstreamEvidence,route:{...workstreamRoute,...workstreamTarget.effective,requested,routingDecision:workstreamDecision},
+        delegation:createDelegation(workstreamTarget.effective.role,workstreamEvidence,workstreamPolicy,workstreamTarget.effective),
+        advice:scopedAdvice,policy:workstreamPolicy,review:workstreamReview,routingDecision:workstreamDecision,commander:{mode:'host',apiCommander:false}
+      }))
     }
-  } : null
+  }
+  parallel.assignments=workstreamPlans.map((plan,index)=>({
+    id:parallel.workstreams[index].id,decisionId:plan.routingDecision.decisionId,effective:plan.routingDecision.effective,
+    selection:plan.routingDecision.selection.target,overrides:plan.routingDecision.overrides,
+    handoff:plan.routingDecision.handoff,dispatch:plan.routingDecision.dispatch,delegation:plan.delegation,
+    evidenceDigest:plan.routingDecision.evidenceDigest
+  }))
+  const hasAssignments=parallel.assignments.length>1
+  const modes=new Set(parallel.assignments.map(value=>value.effective.executionMode))
+  const handoff = hasAssignments ? {
+    required:true,mode:modes.size>1?'mixed':modes.values().next().value,scope:'workstream-assignments',parentModelUnchanged:true,
+    billingSource:modes.size>1?'mixed':(modes.has('native_host')?'chatgpt_plan':'external_api'),
+    orchestration:{strategy:'heterogeneous-non-overlapping',maxAgents:parallel.effective,routeOncePerPhase:true,
+      instruction:'Use each workstream assignment exactly once. Spawn native assignments with their selected model; execute external assignments by decisionId. Run at most maxAgents concurrently. The parent integrates and verifies all results.'}
+  } : handoffFor(target.effective,{strategy:parallel.effective>1?'parallel-non-overlapping':'single',maxAgents:parallel.effective})
   const selection = { worker: worker.trace, target: target.trace }
   const routingDecision = {
     requested,
@@ -188,18 +272,9 @@ export async function planTask(input, options = {}) {
     selection,
     overrides,
     handoff,
-    dispatch: target.effective.executionMode === 'external_api' ? {
-      tool: 'execute_routed_task',
-      instruction: 'Execute this server-held decision using decisionId and optional budget/deadline only. Do not reroute, substitute a native worker, or pass model/evidence overrides. The external delegate sees only the supplied packet; the parent applies and verifies any returned patch.'
-    } : null,
+    dispatch: hasAssignments ? (modes.has('external_api') ? {tool:'execute_routed_task',perWorkstream:true,instruction:'Execute only external workstream assignment decisionIds. Native assignments are host subagent handoffs. Do not reroute or substitute targets.'} : null) : dispatchFor(target.effective),
     parallel,
-    executionContext: {
-      workspace: String(input.workspace || '').slice(0, 1000),
-      ownerAuthorizedRetry: Boolean(input.ownerAuthorizedRetry),
-      retryReason: String(input.retryReason || '').slice(0, 500),
-      attempts: (input.attempts || []).length,
-      newEvidence: Boolean(input.newEvidence)
-    },
+    executionContext: phaseExecutionContext,
     planReuse: {
       routingPhaseId: input.routingPhaseId || null,
       routeOncePerPhase: true,
@@ -214,6 +289,7 @@ export async function planTask(input, options = {}) {
     policy,
     review,
     routingDecision,
-    commander: { mode: 'host', apiCommander: false }
+    commander: { mode: 'host', apiCommander: false },
+    _workstreamPlans: workstreamPlans
   })
 }

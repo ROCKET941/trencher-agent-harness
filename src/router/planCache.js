@@ -9,9 +9,16 @@ export class PlanCache {
   }
   remember(plan) {
     if (!plan.delegation) return plan
-    const id = plan.routingDecision.decisionId
     const expiresAt = this.now() + this.ttlMs
-    const saved = structuredClone(plan)
+    const candidate=structuredClone(plan),workstreamPlans=Array.isArray(candidate._workstreamPlans)?candidate._workstreamPlans:[]
+    delete candidate._workstreamPlans
+    if(candidate.routingDecision?.parallel?.assignments)candidate.routingDecision.parallel.assignments=candidate.routingDecision.parallel.assignments.map(value=>({...value,expiresAt:new Date(expiresAt).toISOString()}))
+    for(const workstreamPlan of workstreamPlans)this.#save(workstreamPlan,expiresAt)
+    return this.#save(candidate,expiresAt)
+  }
+  #save(plan,expiresAt) {
+    const id=plan.routingDecision.decisionId,saved=structuredClone(plan)
+    delete saved._workstreamPlans
     saved.routingDecision.planReuse = { ...saved.routingDecision.planReuse, executionByDecisionId: true, expiresAt: new Date(expiresAt).toISOString() }
     saved.route.routingDecision = saved.routingDecision
     this.#entries.delete(id)

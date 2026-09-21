@@ -216,3 +216,155 @@ test('MCP route to pinned execute calls Jev once and preserves all existing tool
     assert.equal(calls.length, 2)
   } finally { await client.close() }
 })
+
+test('one Jev request produces pinned heterogeneous assignments and each executes exactly once', async () => {
+  const response = {
+    ...answers('deepseek:deepseek-flash'),
+    execution_lane: choice('native_host'), native_target: choice('openai:gpt-5.6-luna'), effort: choice('medium'),
+    parallel_required: { type: 'noul', noul: .95 }, parallel_justification: choice('independent'),
+    workstream_0_execution_lane: choice('native_host'), workstream_0_native_target: choice('openai:gpt-5.6-sol'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_effort: choice('high'),
+    workstream_1_execution_lane: choice('external_api'), workstream_1_native_target: choice('openai:gpt-5.6-luna'), workstream_1_external_target: choice('deepseek:deepseek-flash'), workstream_1_effort: choice('low'),
+    workstream_2_execution_lane: choice('external_api'), workstream_2_native_target: choice('openai:gpt-5.6-luna'), workstream_2_external_target: choice('kimi:kimi-k3'), workstream_2_effort: choice('low')
+  }
+  const { options, calls } = await fixture(response), deepseekCalls = [], kimiCalls = []
+  clearProviders(); registerProvider('deepseek', adapter('deepseek', deepseekCalls)); registerProvider('kimi', adapter('kimi', kimiCalls))
+  const workstreams = [
+    { id: 'repository-check', task: 'Inspect repository callers and run tests', files: ['src/callers.js'], tests: ['test/callers.test.js'] },
+    { id: 'bounded-patch', task: 'Patch the complete supplied clamp helper', rootCause: 'upper bound is wrong', evidence: ['export const clamp=(v,lo,hi)=>Math.min(lo,Math.max(lo,v))'], files: ['src/clamp.js'], tests: ['test/clamp.test.js'] },
+    { id: 'bounded-review', task: 'Review this complete supplied guard', evidence: ['export const allowed=x=>x!==null'], files: ['src/guard.js'], tests: ['test/guard.test.js'] }
+  ]
+  const plan = await routeTask({ ...input, workstreams, routingPhaseId: 'mixed-phase' }, options)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].state.workstreams.length, 3)
+  assert.equal(calls[0].state.workstreams[1].evidence[0], workstreams[1].evidence[0])
+  for (const index of [0, 1, 2]) {
+    assert.ok(calls[0].questions[`workstream_${index}_execution_lane`])
+    assert.ok(calls[0].questions[`workstream_${index}_native_target`])
+    assert.ok(calls[0].questions[`workstream_${index}_external_target`])
+    assert.ok(calls[0].questions[`workstream_${index}_effort`])
+  }
+  const assignments = plan.routingDecision.parallel.assignments
+  assert.equal(assignments.length, 3); assert.equal(plan._workstreamPlans, undefined)
+  assert.equal(plan.routingDecision.handoff.mode, 'mixed')
+  assert.equal(plan.routingDecision.handoff.scope, 'workstream-assignments')
+  assert.equal(plan.routingDecision.handoff.orchestration.strategy, 'heterogeneous-non-overlapping')
+  assert.deepEqual(assignments.map(value => [value.id, value.effective.provider, value.effective.model, value.effective.effort]), [
+    ['repository-check', 'openai', 'gpt-5.6-sol', 'high'],
+    ['bounded-patch', 'deepseek', 'deepseek-flash', 'low'],
+    ['bounded-review', 'kimi', 'kimi-k3', 'low']
+  ])
+  assert.equal(new Set(assignments.map(value => value.decisionId)).size, 3)
+  assert.match(assignments[1].delegation.instruction, /Do not use shell, filesystem/)
+  assert.equal(assignments[1].delegation.context.evidence[0], workstreams[1].evidence[0])
+  const native = await executeRoutedTask({ decisionId: assignments[0].decisionId }, options)
+  const deepseek = await executeRoutedTask({ decisionId: assignments[1].decisionId }, options)
+  const kimi = await executeRoutedTask({ decisionId: assignments[2].decisionId }, options)
+  assert.equal(native.reason, 'native-host-agent-required'); assert.equal(native.target.model, 'gpt-5.6-sol')
+  assert.equal(deepseek.execution.executed, true); assert.equal(kimi.execution.executed, true)
+  assert.equal(deepseekCalls[0].task, workstreams[1].task); assert.equal(kimiCalls[0].task, workstreams[2].task)
+  assert.equal(calls.length, 1)
+  const replay = await executeRoutedTask({ decisionId: assignments[1].decisionId }, options)
+  assert.equal(replay.execution.reason, 'idempotent-replay'); assert.equal(deepseekCalls.length, 1)
+})
+
+test('incomplete workstream advice falls back every assignment to native without weakening bounds', async () => {
+  const response = {
+    ...answers(),
+    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low')
+  }
+  const { options } = await fixture(response)
+  const workstreams = [
+    { id: 'a', task: 'first', evidence: ['a'.repeat(5000)], files: ['a.js'] },
+    { id: 'b', task: 'second', files: ['b.js'] }
+  ]
+  const plan = await routeTask({ ...input, workstreams }, options)
+  assert.equal(plan.routingDecision.parallel.assignments.length, 2)
+  assert.ok(plan.routingDecision.parallel.assignments.every(value => value.effective.executionMode === 'native_host'))
+  assert.equal(plan.routingDecision.parallel.assignments[0].delegation.context.truncation.occurred, true)
+})
+
+test('one malformed workstream answer makes the assignment set fall back atomically', async () => {
+  const response = {
+    ...answers(),
+    workstream_0_execution_lane: choice('external_api'), workstream_0_external_target: choice('deepseek:deepseek-flash'), workstream_0_native_target: choice('openai:gpt-5.6-luna'), workstream_0_effort: choice('low'),
+    workstream_1_execution_lane: { type: 'choice', choice: 'unknown_lane', confidence: .99 }, workstream_1_external_target: choice('kimi:kimi-k3'), workstream_1_native_target: choice('openai:gpt-5.6-luna'), workstream_1_effort: choice('low')
+  }
+  const { options } = await fixture(response)
+  const plan = await routeTask({ ...input, workstreams: [
+    { id: 'a', task: 'first', evidence: ['complete a'], files: ['a.js'] },
+    { id: 'b', task: 'second', evidence: ['complete b'], files: ['b.js'] }
+  ] }, options)
+  assert.ok(plan.routingDecision.parallel.assignments.every(value => value.effective.executionMode === 'native_host'))
+  assert.equal(plan.routingDecision.dispatch, null)
+})
+
+test('a high-risk workstream receives its own deterministic capability and review floors', async () => {
+  const options = { env: {}, useJev: false, planCache: new PlanCache() }
+  const plan = await routeTask({ task: 'Refactor independent helpers', workstreams: [
+    { id: 'ordinary', task: 'Refactor a display helper', files: ['src/display.js'] },
+    { id: 'sensitive', task: 'Deploy production and execute wallet settlement', files: ['src/settlement.js'] }
+  ] }, options)
+  const [ordinary,sensitive]=plan.routingDecision.parallel.assignments
+  assert.equal(plan.packet.risk,'normal');assert.equal(ordinary.effective.role,'engineer')
+  assert.equal(sensitive.effective.role,'deep_debugger');assert.equal(sensitive.effective.model,'gpt-5.6-sol');assert.equal(sensitive.effective.effort,'high')
+  const execution=await executeRoutedTask({decisionId:sensitive.decisionId},options)
+  assert.equal(execution.plan.packet.risk,'high');assert.equal(execution.plan.review.required,true)
+  assert.equal(execution.plan.policy.contextProfile,'expanded');assert.equal(execution.plan.policy.retrievalMode,'exploratory')
+})
+
+test('a screened high-risk root cause remains unknown and cannot weaken safety floors', async () => {
+  const options = { env: {}, useJev: false, planCache: new PlanCache() }
+  const plan = await routeTask({ task: 'Refactor independent helpers', workstreams: [
+    { id: 'ordinary', task: 'Refactor a display helper', files: ['src/display.js'] },
+    { id: 'sensitive', task: 'Deploy production and execute wallet settlement', rootCause: 'api_key=abcdefghijklmnop', files: ['src/settlement.js'] }
+  ] }, options)
+  const sensitive=plan.routingDecision.parallel.assignments[1]
+  const execution=await executeRoutedTask({decisionId:sensitive.decisionId},options)
+  assert.equal(execution.plan.packet.rootCause,null)
+  assert.ok(execution.plan.packet.truncation.removed.includes('rootCause:secret-like'))
+  assert.equal(sensitive.effective.role,'deep_debugger');assert.equal(execution.plan.review.required,true)
+  assert.equal(execution.plan.policy.contextProfile,'expanded');assert.equal(execution.plan.policy.retrievalMode,'exploratory')
+})
+
+test('raw traversal or screened ownership paths disable workstream assignments', async () => {
+  const options = { env: {}, useJev: false, planCache: new PlanCache() }
+  for (const unsafe of ['src/../a.js','.env/config']) {
+    const plan=await routeTask({task:'Refactor independent helpers',workstreams:[
+      {id:'a',task:'first',files:[unsafe]},{id:'b',task:'second',files:['b.js']}
+    ]},options)
+    assert.equal(plan.routingDecision.parallel.nonOverlapping,false)
+    assert.deepEqual(plan.routingDecision.parallel.assignments,[])
+    assert.ok(plan.routingDecision.parallel.issues.some(value=>value.reason==='ambiguous-file-ownership'))
+  }
+})
+
+test('ownership that cannot fit every assignment profile fails closed before routing', async () => {
+  const options = { env: {}, useJev: false, planCache: new PlanCache() }
+  const plan=await routeTask({task:'Refactor independent helpers',workstreams:[
+    {id:'a',task:'first',files:['a.js','b.js','c.js','d.js']},{id:'b',task:'second',files:['e.js']}
+  ]},options)
+  assert.equal(plan.routingDecision.parallel.nonOverlapping,false)
+  assert.deepEqual(plan.routingDecision.parallel.assignments,[])
+  assert.ok(plan.routingDecision.parallel.issues.some(value=>value.reason==='workstream-ownership-exceeds-assignment-bounds'))
+})
+
+test('overlap or dependency disables per-workstream decisions and cache keys change with ownership', async () => {
+  const invalid = [
+    [{ id: 'a', task: 'first', files: ['shared.js'] }, { id: 'b', task: 'second', files: ['shared.js'] }],
+    [{ id: 'a', task: 'first', files: ['a.js'] }, { id: 'b', task: 'second', files: ['b.js'], dependsOn: ['a'] }]
+  ]
+  for (const workstreams of invalid) {
+    const { options, calls } = await fixture()
+    const plan = await routeTask({ ...input, workstreams }, options)
+    assert.deepEqual(plan.routingDecision.parallel.assignments, [])
+    assert.equal(plan.routingDecision.parallel.effective, 1)
+    assert.deepEqual(calls[0].state.workstreams, [])
+    assert.equal(calls[0].questions.workstream_0_execution_lane, undefined)
+  }
+  const deterministic = { env: {}, useJev: false, planCache: new PlanCache() }
+  const one = await routeTask({ ...input, workstreams: [{ id: 'a', task: 'first', files: ['a.js'] }, { id: 'b', task: 'second', files: ['b.js'] }] }, deterministic)
+  const two = await routeTask({ ...input, workstreams: [{ id: 'a', task: 'first', files: ['a2.js'] }, { id: 'b', task: 'second', files: ['b.js'] }] }, deterministic)
+  assert.notEqual(one.routingDecision.decisionId, two.routingDecision.decisionId)
+  assert.equal(one.routingDecision.parallel.assignments.length, 2)
+  assert.ok(one.routingDecision.parallel.assignments.every(value => value.effective.executionMode === 'native_host'))
+})

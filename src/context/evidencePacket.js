@@ -41,7 +41,9 @@ export function createEvidencePacket(input = {}, options = {}) {
   const screenedPaths=(key,value)=>screened(key,value).filter((item,index)=>{const allowed=safePath(item);if(!allowed)removed.push(`${key}[${index}]:unsafe-path`);return allowed})
   const task=safeText(input.task)?input.task:'[removed: secret-like task content]'
   if(task!==input.task)removed.push('task:secret-like')
-  const rootCause=input.rootCause==null?null:(safeText(input.rootCause)?input.rootCause:'[removed: secret-like root-cause content]')
+  // A screened root cause must remain unknown to routing policy. A truthy
+  // redaction placeholder would incorrectly suppress high-risk investigation.
+  const rootCause=input.rootCause==null?null:(safeText(input.rootCause)?input.rootCause:null)
   if(input.rootCause!=null&&rootCause!==input.rootCause)removed.push('rootCause:secret-like')
   const safeFacts=Array.isArray(input.facts)?input.facts.filter((item,index)=>{const allowed=safeText(item?.claim)&&safeText(item?.source);if(!allowed)removed.push(`facts[${index}]:secret-like`);return allowed}):[]
   const safeInspected=Array.isArray(input.inspected)?input.inspected.filter((item,index)=>{const allowed=safePath(item?.path)&&safeText(item?.range)&&safeText(item?.digest);if(!allowed)removed.push(`inspected[${index}]:unsafe-or-secret-like`);return allowed}):[]

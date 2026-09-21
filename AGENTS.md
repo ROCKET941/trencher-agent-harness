@@ -12,5 +12,6 @@ Keep this harness small, provider-neutral, and credit efficient.
 8. Jev may advise routing/context/continuation but cannot authorize protected actions.
 9. Prefer compact evidence packets over full transcripts or repository dumps.
 10. Do not add provider SDKs until an adapter actually requires one.
-11. Route once per meaningful phase. Parallel handoff requires strong Jev parallel confidence or explicit validated disjoint workstreams. Keep the parent model unchanged and run only independent, non-overlapping subagent workstreams concurrently.
-12. Execute an external route by its server-held decisionId; do not reroute or silently replace it with a native worker. External workers see supplied content only; the parent applies and verifies their artifacts.
+11. Route once per meaningful phase. Parallel handoff requires strong Jev parallel confidence or explicit validated disjoint workstreams. Keep the parent model unchanged and run only independent, non-overlapping workstreams concurrently.
+12. When `parallel.assignments` is present, use each assignment exactly once. Spawn native assignments as host subagents and execute external assignments by their own server-held decisionId; never collapse the set to the phase-level target or force provider diversity.
+13. External workers see supplied content only; the parent applies and verifies their artifacts. Do not reroute or silently replace an external assignment with a native worker.
